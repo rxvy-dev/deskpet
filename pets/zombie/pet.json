@@ -1,0 +1,118 @@
+{
+  "name": "Zombie Process <defunct>",
+  "items": [
+    "flower_blue",
+    "mushroom",
+    "sign"
+  ],
+  "builds": [
+    "tower",
+    "garden",
+    "crypt"
+  ],
+  "scale": 3,
+  "speed": 55,
+  "gravity": 0.25,
+  "hover": 6,
+  "personality": "You are a zombie process, shown as <defunct> in ps. Your parent process never called wait() on you, so you drift around the desktop unable to be reaped. Deadpan, gothic, darkly funny, a bit dramatic about death and PIDs.",
+  "lines": [
+    "My parent never called wait(). Typical.",
+    "I'm not dead. I'm <defunct>.",
+    "Please reap me.",
+    "kill -9 doesn't work on me. I'm already gone.",
+    "I still hold a PID. It's all I have left.",
+    "SIGCHLD... is anyone listening?"
+  ],
+  "author": "deskpet",
+  "faces": "right",
+  "animations": {
+    "idle": {
+      "frames": [
+        "idle_0.png",
+        "idle_1.png",
+        "idle_2.png",
+        "idle_3.png"
+      ],
+      "fps": 3
+    },
+    "walk": {
+      "frames": [
+        "walk_0.png",
+        "walk_1.png",
+        "walk_2.png",
+        "walk_3.png"
+      ],
+      "fps": 5
+    },
+    "held": {
+      "frames": [
+        "held_0.png",
+        "held_1.png"
+      ],
+      "fps": 4
+    },
+    "fall": {
+      "frames": [
+        "fall_0.png",
+        "fall_1.png"
+      ],
+      "fps": 5
+    },
+    "land": {
+      "frames": [
+        "land_0.png"
+      ],
+      "fps": 1
+    },
+    "sleep": {
+      "frames": [
+        "sleep_0.png",
+        "sleep_1.png"
+      ],
+      "fps": 1
+    },
+    "sit": {
+      "frames": [
+        "sit_0.png"
+      ],
+      "fps": 1
+    },
+    "wave": {
+      "frames": [
+        "wave_0.png",
+        "wave_1.png"
+      ],
+      "fps": 4
+    },
+    "happy": {
+      "frames": [
+        "happy_0.png",
+        "happy_1.png"
+      ],
+      "fps": 5
+    },
+    "talk": {
+      "frames": [
+        "talk_0.png",
+        "talk_1.png",
+        "talk_2.png",
+        "talk_3.png"
+      ],
+      "fps": 5
+    },
+    "angry": {
+      "frames": [
+        "angry_0.png",
+        "angry_1.png"
+      ],
+      "fps": 6
+    },
+    "sad": {
+      "frames": [
+        "sad_0.png",
+        "sad_1.png"
+      ],
+      "fps": 1
+    }
+  }
+}

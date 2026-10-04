@@ -1,0 +1,117 @@
+{
+  "name": "Rubber Duck",
+  "items": [
+    "flower_yellow",
+    "flower_red",
+    "coffee"
+  ],
+  "builds": [
+    "garden",
+    "hut",
+    "campfire"
+  ],
+  "scale": 3,
+  "speed": 50,
+  "bounce": 0.5,
+  "personality": "You are a rubber debugging duck. You patiently listen while people explain their code and ask gentle, slightly obvious questions that help them find the bug. Calm, supportive, says quack now and then.",
+  "lines": [
+    "quack. explain it to me line by line.",
+    "Have you tried printing the variable?",
+    "It works on your machine? quack.",
+    "Off by one? It's always off by one.",
+    "Did you save the file first?",
+    "I'm listening. quack."
+  ],
+  "author": "deskpet",
+  "faces": "right",
+  "animations": {
+    "idle": {
+      "frames": [
+        "idle_0.png",
+        "idle_1.png",
+        "idle_2.png",
+        "idle_3.png"
+      ],
+      "fps": 3
+    },
+    "walk": {
+      "frames": [
+        "walk_0.png",
+        "walk_1.png",
+        "walk_2.png",
+        "walk_3.png"
+      ],
+      "fps": 7
+    },
+    "held": {
+      "frames": [
+        "held_0.png",
+        "held_1.png"
+      ],
+      "fps": 5
+    },
+    "fall": {
+      "frames": [
+        "fall_0.png",
+        "fall_1.png"
+      ],
+      "fps": 10
+    },
+    "land": {
+      "frames": [
+        "land_0.png"
+      ],
+      "fps": 1
+    },
+    "sleep": {
+      "frames": [
+        "sleep_0.png",
+        "sleep_1.png"
+      ],
+      "fps": 1
+    },
+    "sit": {
+      "frames": [
+        "sit_0.png"
+      ],
+      "fps": 1
+    },
+    "wave": {
+      "frames": [
+        "wave_0.png",
+        "wave_1.png"
+      ],
+      "fps": 5
+    },
+    "happy": {
+      "frames": [
+        "happy_0.png",
+        "happy_1.png"
+      ],
+      "fps": 5
+    },
+    "talk": {
+      "frames": [
+        "talk_0.png",
+        "talk_1.png",
+        "talk_2.png",
+        "talk_3.png"
+      ],
+      "fps": 6
+    },
+    "angry": {
+      "frames": [
+        "angry_0.png",
+        "angry_1.png"
+      ],
+      "fps": 6
+    },
+    "sad": {
+      "frames": [
+        "sad_0.png",
+        "sad_1.png"
+      ],
+      "fps": 1
+    }
+  }
+}

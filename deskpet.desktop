@@ -1,0 +1,28 @@
+[Desktop Entry]
+Type=Application
+Name=deskpet
+GenericName=Desktop Pet
+Comment=Little desktop pets that walk, climb, nap and talk
+Exec=@BIN@ --pet tux
+Icon=@ICON@
+Terminal=false
+Categories=Utility;Amusement;
+Keywords=pet;tux;penguin;desktop;mascot;
+StartupNotify=false
+Actions=gang;cat;crab;stop;
+
+[Desktop Action gang]
+Name=The whole gang (they chat)
+Exec=@BIN@ --pet tux,cat,duck,crab,floppy,daemon
+
+[Desktop Action cat]
+Name=/dev/cat
+Exec=@BIN@ --pet cat
+
+[Desktop Action crab]
+Name=Crab
+Exec=@BIN@ --pet crab
+
+[Desktop Action stop]
+Name=Stop all pets
+Exec=pkill -f deskpet.py

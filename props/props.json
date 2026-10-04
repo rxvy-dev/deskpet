@@ -1,0 +1,135 @@
+{
+  "brick": {
+    "solid": true,
+    "build": true,
+    "frames": [
+      "brick_0.png"
+    ]
+  },
+  "crate": {
+    "solid": true,
+    "build": true,
+    "frames": [
+      "crate_0.png"
+    ]
+  },
+  "stone": {
+    "solid": true,
+    "build": true,
+    "frames": [
+      "stone_0.png"
+    ]
+  },
+  "window": {
+    "solid": true,
+    "build": true,
+    "frames": [
+      "window_0.png"
+    ]
+  },
+  "door": {
+    "solid": true,
+    "build": true,
+    "frames": [
+      "door_0.png"
+    ]
+  },
+  "roof_l": {
+    "solid": true,
+    "build": true,
+    "frames": [
+      "roof_l_0.png"
+    ]
+  },
+  "roof_m": {
+    "solid": true,
+    "build": true,
+    "frames": [
+      "roof_m_0.png"
+    ]
+  },
+  "roof_r": {
+    "solid": true,
+    "build": true,
+    "frames": [
+      "roof_r_0.png"
+    ]
+  },
+  "pkg": {
+    "solid": true,
+    "build": true,
+    "bounce": 0.2,
+    "frames": [
+      "pkg_0.png"
+    ]
+  },
+  "flag": {
+    "fps": 4,
+    "frames": [
+      "flag_0.png",
+      "flag_1.png"
+    ]
+  },
+  "campfire": {
+    "fps": 6,
+    "warm": true,
+    "frames": [
+      "campfire_0.png",
+      "campfire_1.png",
+      "campfire_2.png"
+    ]
+  },
+  "flower_red": {
+    "frames": [
+      "flower_red_0.png"
+    ]
+  },
+  "flower_yellow": {
+    "frames": [
+      "flower_yellow_0.png"
+    ]
+  },
+  "flower_blue": {
+    "frames": [
+      "flower_blue_0.png"
+    ]
+  },
+  "mushroom": {
+    "frames": [
+      "mushroom_0.png"
+    ]
+  },
+  "sign": {
+    "sign": true,
+    "frames": [
+      "sign_0.png"
+    ]
+  },
+  "fish": {
+    "toy": true,
+    "bounce": 0.15,
+    "frames": [
+      "fish_0.png"
+    ]
+  },
+  "yarn": {
+    "toy": true,
+    "bounce": 0.35,
+    "frames": [
+      "yarn_0.png"
+    ]
+  },
+  "ball": {
+    "toy": true,
+    "bounce": 0.7,
+    "round": true,
+    "frames": [
+      "ball_0.png"
+    ]
+  },
+  "coffee": {
+    "frames": [
+      "coffee_0.png"
+    ]
+  }
+}

@@ -1,0 +1,125 @@
+{
+  "name": "Floppy",
+  "items": [
+    "pkg",
+    "coffee",
+    "sign"
+  ],
+  "builds": [
+    "pkgstack",
+    "house",
+    "wall"
+  ],
+  "scale": 3,
+  "speed": 40,
+  "climb_speed": 30,
+  "bounce": 0.3,
+  "personality": "You are Floppy, a 1.44MB 3.5-inch floppy disk. A grumpy but lovable grandpa from the 1990s. Everything was better back then, you are proud to be the save icon, and you complain that modern files are too big.",
+  "lines": [
+    "Back in my day, 1.44 megs was PLENTY.",
+    "I'm the save icon, you know. You're welcome.",
+    "Insert disk 2 of 37.",
+    "Kids these days and their terabytes.",
+    "Don't eject me while I'm talking!",
+    "I once held an entire Linux distro. Two, actually."
+  ],
+  "author": "deskpet",
+  "faces": "right",
+  "animations": {
+    "idle": {
+      "frames": [
+        "idle_0.png",
+        "idle_1.png",
+        "idle_2.png",
+        "idle_3.png"
+      ],
+      "fps": 3
+    },
+    "walk": {
+      "frames": [
+        "walk_0.png",
+        "walk_1.png",
+        "walk_2.png",
+        "walk_3.png"
+      ],
+      "fps": 6
+    },
+    "held": {
+      "frames": [
+        "held_0.png",
+        "held_1.png"
+      ],
+      "fps": 5
+    },
+    "fall": {
+      "frames": [
+        "fall_0.png",
+        "fall_1.png"
+      ],
+      "fps": 10
+    },
+    "land": {
+      "frames": [
+        "land_0.png"
+      ],
+      "fps": 1
+    },
+    "sleep": {
+      "frames": [
+        "sleep_0.png",
+        "sleep_1.png"
+      ],
+      "fps": 1
+    },
+    "sit": {
+      "frames": [
+        "sit_0.png"
+      ],
+      "fps": 1
+    },
+    "wave": {
+      "frames": [
+        "wave_0.png",
+        "wave_1.png"
+      ],
+      "fps": 5
+    },
+    "happy": {
+      "frames": [
+        "happy_0.png",
+        "happy_1.png"
+      ],
+      "fps": 5
+    },
+    "climb": {
+      "frames": [
+        "climb_0.png",
+        "climb_1.png"
+      ],
+      "fps": 6
+    },
+    "talk": {
+      "frames": [
+        "talk_0.png",
+        "talk_1.png",
+        "talk_2.png",
+        "talk_3.png"
+      ],
+      "fps": 6
+    },
+    "angry": {
+      "frames": [
+        "angry_0.png",
+        "angry_1.png"
+      ],
+      "fps": 6
+    },
+    "sad": {
+      "frames": [
+        "sad_0.png",
+        "sad_1.png"
+      ],
+      "fps": 1
+    }
+  }
+}

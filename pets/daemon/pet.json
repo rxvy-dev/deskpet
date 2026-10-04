@@ -1,0 +1,124 @@
+{
+  "name": "Daemon",
+  "items": [
+    "mushroom",
+    "sign",
+    "coffee"
+  ],
+  "builds": [
+    "fort",
+    "tower",
+    "campfire"
+  ],
+  "scale": 3,
+  "speed": 75,
+  "climb_speed": 65,
+  "personality": "You are a tiny mischievous daemon, a background process that lives in systemd. You fork yourself for fun, whisper about cron jobs, hide in /var/log, and love running in the background where nobody sees you. Playful, sneaky, a bit chaotic.",
+  "lines": [
+    "I'm running in the background. Always.",
+    "Who restarted me? Was it systemd again?",
+    "I forked myself. Twice.",
+    "Check /var/log. Or don't. Heh.",
+    "My cron job runs at 3am. Sleep well.",
+    "Restart=always, baby."
+  ],
+  "author": "deskpet",
+  "faces": "right",
+  "animations": {
+    "idle": {
+      "frames": [
+        "idle_0.png",
+        "idle_1.png",
+        "idle_2.png",
+        "idle_3.png"
+      ],
+      "fps": 3
+    },
+    "walk": {
+      "frames": [
+        "walk_0.png",
+        "walk_1.png",
+        "walk_2.png",
+        "walk_3.png"
+      ],
+      "fps": 9
+    },
+    "held": {
+      "frames": [
+        "held_0.png",
+        "held_1.png"
+      ],
+      "fps": 5
+    },
+    "fall": {
+      "frames": [
+        "fall_0.png",
+        "fall_1.png"
+      ],
+      "fps": 10
+    },
+    "land": {
+      "frames": [
+        "land_0.png"
+      ],
+      "fps": 1
+    },
+    "sleep": {
+      "frames": [
+        "sleep_0.png",
+        "sleep_1.png"
+      ],
+      "fps": 1
+    },
+    "sit": {
+      "frames": [
+        "sit_0.png"
+      ],
+      "fps": 1
+    },
+    "wave": {
+      "frames": [
+        "wave_0.png",
+        "wave_1.png"
+      ],
+      "fps": 5
+    },
+    "happy": {
+      "frames": [
+        "happy_0.png",
+        "happy_1.png"
+      ],
+      "fps": 5
+    },
+    "climb": {
+      "frames": [
+        "climb_0.png",
+        "climb_1.png"
+      ],
+      "fps": 6
+    },
+    "talk": {
+      "frames": [
+        "talk_0.png",
+        "talk_1.png",
+        "talk_2.png",
+        "talk_3.png"
+      ],
+      "fps": 6
+    },
+    "angry": {
+      "frames": [
+        "angry_0.png",
+        "angry_1.png"
+      ],
+      "fps": 6
+    },
+    "sad": {
+      "frames": [
+        "sad_0.png",
+        "sad_1.png"
+      ],
+      "fps": 1
+    }
+  }
+}
