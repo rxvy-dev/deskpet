@@ -1,6 +1,6 @@
 # Maintainer: rxvy-dev <https://github.com/rxvy-dev>
 pkgname=deskpet
-pkgver=3.1
+pkgver=4.0
 pkgrel=1
 pkgdesc="Little desktop pets for Wayland - they climb your windows, build things, have moods and talk (local LLM)"
 arch=('any')

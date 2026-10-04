@@ -44,7 +44,7 @@ from gi.repository import Gdk, GdkPixbuf, GLib, Gtk  # noqa: E402
 
 import cairo  # noqa: E402
 
-VERSION = "3.1"
+VERSION = "4.0"
 HERE = os.path.dirname(os.path.realpath(__file__))
 XDG_DATA = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
 XDG_CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
@@ -350,6 +350,22 @@ DEFAULT_CONFIG = {
         "max_decor": 16,
         "max_props": 160,
         "smash": True,                # angry pets knock things over
+    },
+    "family": {
+        "enabled": True,              # close friends become partners and have babies
+        "max_pets": 12,               # population limit (babies included)
+        "max_kids": 2,                # per couple
+        "baby_every_minutes": 15,     # at most one baby per couple this often
+        "grow_up_minutes": 30,        # babies grow up after this long
+    },
+    "towns": {
+        "enabled": True,              # groups of friends found towns and build them together
+        "min_members": 3,
+        "width": 620,                 # how much floor a town claims (pixels)
+    },
+    "inventions": {
+        "enabled": True,              # pets invent new buildings and gadgets
+        "every_minutes": 10,          # 10, 60, ...
     },
     "climb_windows": True,            # climb + stand on your windows (sway, Hyprland, or windows_command)
     "windows_command": "",            # command printing JSON [{"x","y","w","h","title"}] (surface coords) for other WMs
@@ -894,8 +910,9 @@ class StateStore:
         if not self.enabled:
             return
         for pet in app.pets:
-            self.data["pets"][pet.pack.id] = pet.snapshot()
+            self.data["pets"][pet.uid] = pet.snapshot()
         self.data["world"] = app.world.snapshot()
+        self.data.update(app.society_snapshot())
         try:
             os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
             tmp = STATE_PATH + ".tmp"
@@ -999,8 +1016,9 @@ class Project:
         self.height = len(rows) * bs
         self.site_x = site_x
         self.base_y = world.floor_y()
-        self.owner = owner.pack.id if owner else None
-        self.owner_name = owner.pack.name if owner else "someone"
+        self.owner = owner.uid if owner else None
+        self.town = None
+        self.owner_name = owner.name if owner else "someone"
         self.pending = list(range(len(self.cells)))  # cells nobody has claimed yet (lowest row first)
         self.placed = 0
         self.props = []
@@ -1067,11 +1085,16 @@ class Project:
     def center(self):
         return self.site_x + self.width / 2
 
+    def label(self):
+        return self.world.app.kind_label(self.kind)
+
     def describe(self):
         who = self.owner_name
+        town = self.world.app.town_by_id(self.town)
+        where = f" in the town of {town.name}" if town else ""
         if not self.done:
-            return f"a {self.kind} {who} is building ({self.placed}/{self.total} blocks)"
-        s = f"{who}'s {self.kind}" + (f" called \"{self.name}\"" if self.name else "")
+            return f"a {self.label()} {who} is building{where} ({self.placed}/{self.total} blocks)"
+        s = f"{who}'s {self.label()}{where}" + (f" called \"{self.name}\"" if self.name else "")
         return s + (" (someone smashed it)" if self.smashed else "")
 
 
@@ -1155,17 +1178,27 @@ class World:
                 best = p
         return best
 
-    def site_for(self, kind, near_x):
-        """find a free stretch of floor for a building"""
-        bp = BLUEPRINTS[kind]
+    def site_for(self, kind, near_x, region=None):
+        """find a free stretch of floor for a building. region=(x0, x1) keeps it inside a town;
+        without one, town land is left alone"""
+        bp = BLUEPRINTS.get(kind)
+        if not bp:
+            return None
         width = max(len(r) for r in bp) * self.block + 12
         W = self.app.w
-        if W < width + 40:
+        lo, hi = (20, W - width - 20) if region is None else (max(20, region[0]), min(W - 20, region[1]) - width)
+        if hi < lo:
             return None
-        taken = [(b.site_x - 30, b.site_x + b.width + 30) for b in self.projects if not b.smashed or b.props]
-        taken += [(p.x - 6, p.x + p.w + 6) for p in self.props if p.resting and not p.building and abs(p.y + p.h - self.floor_y()) < 3]
-        for _ in range(40):
-            x = clamp(near_x + random.uniform(-500, 500) - width / 2, 20, W - width - 20)
+        taken = [(b.site_x - 24, b.site_x + b.width + 24) for b in self.projects if not b.smashed or b.props]
+        taken += [(p.x - 6, p.x + p.w + 6) for p in self.props
+                  if p.resting and not p.building and p.kind.solid and abs(p.y + p.h - self.floor_y()) < 3]
+        if region is None:
+            taken += [(t.x0, t.x1) for t in self.app.towns]
+        for i in range(60):
+            if region is None:
+                x = clamp(near_x + random.uniform(-500, 500) - width / 2, lo, hi)
+            else:
+                x = lo + (hi - lo) * (i / 59 if i % 2 == 0 else random.random())
             if all(x + width < a or x > b for a, b in taken):
                 return x
         return None
@@ -1218,7 +1251,8 @@ class World:
         kd = self.kinds.get(kind_name)
         if not kd:
             return None
-        decor = [p for p in self.props if p.building is None and not p.kind.solid and not p.kind.toy and not p.loose]
+        decor = [p for p in self.props if p.building is None and not p.kind.solid and not p.kind.toy and not p.loose
+                 and not str(p.owner or "").startswith("town:")]
         if len(decor) >= int(self.cfg.get("max_decor", 16)):
             self.remove(min(decor, key=lambda p: p.born))
         x = clamp(x - kd.w / 2, 0, self.app.w - kd.w)
@@ -1277,7 +1311,7 @@ class World:
         for b in self.projects:
             if b.done:
                 blds.append({"id": b.id, "kind": b.kind, "owner": b.owner, "oname": b.owner_name, "name": b.name,
-                             "x": b.site_x, "w": b.width, "smashed": b.smashed})
+                             "x": b.site_x, "w": b.width, "smashed": b.smashed, "town": b.town})
         props = []
         for p in self.props:
             if p.held:
@@ -1295,7 +1329,7 @@ class World:
         for b in data.get("buildings", []):
             try:
                 kind = b["kind"]
-                if kind not in BLUEPRINTS:
+                if kind not in BLUEPRINTS and not kind.startswith("inv"):
                     continue
                 proj = Project.__new__(Project)
                 proj.world, proj.kind, proj.id = self, kind, int(b["id"])
@@ -1306,6 +1340,7 @@ class World:
                 proj.pending, proj.placed = [], 0
                 proj.props, proj.builders = [], set()
                 proj.done, proj.smashed, proj.started = True, bool(b.get("smashed")), time.time()
+                proj.town = b.get("town") if isinstance(b.get("town"), int) else None
                 self.projects.append(proj)
                 byid[proj.id] = proj
             except (KeyError, ValueError, TypeError):
@@ -1373,9 +1408,18 @@ THOUGHTS = {
 
 
 class Pet:
-    def __init__(self, app, pack, x=None):
+    def __init__(self, app, pack, x=None, uid=None, name=None):
         self.app = app
         self.pack = pack
+        self.uid = uid or app.new_uid(pack.id)
+        self.name = name or pack.name
+        self.baby = False
+        self.born = time.time()
+        self.parents = []      # uids
+        self.partner = None    # uid
+        self.kids = []         # uids
+        self.town = None       # town id
+        self.last_baby = 0.0   # wall clock
         self.cx = x if x is not None else random.uniform(80, max(81, app.w - 80))
         self.bottom = 60.0  # drops in from the top of the screen
         self.vx = random.uniform(-200, 200)
@@ -1412,7 +1456,7 @@ class Pet:
         self.jitter = 0.0
         self.alert_until = 0.0
         self.extra_drawn = None
-        self.restore(app.store.pet(pack.id))
+        self.restore(app.store.pet(self.uid))
 
     # -- memory
     def remember(self, text):
@@ -1421,7 +1465,9 @@ class Pet:
     def snapshot(self):
         return {"mood": {k: round(v, 1) for k, v in self.mood.v.items()}, "stats": self.stats,
                 "memory": [[round(t), s] for t, s in self.memory], "history": self.history[-10:],
-                "last_seen": time.time()}
+                "last_seen": time.time(), "name": self.name, "pack": self.pack.id, "baby": self.baby,
+                "born": self.born, "parents": self.parents, "partner": self.partner, "kids": self.kids,
+                "town": self.town, "last_baby": self.last_baby}
 
     def restore(self, d):
         if not isinstance(d, dict) or not d:
@@ -1438,6 +1484,16 @@ class Pet:
         self.history = [m for m in hist if isinstance(m, dict) and m.get("role") in ("user", "assistant")][-10:]
         if isinstance(d.get("last_seen"), (int, float)):
             self.last_seen = float(d["last_seen"])
+        if isinstance(d.get("name"), str) and d["name"].strip():
+            self.name = d["name"][:24]
+        self.baby = bool(d.get("baby"))
+        for k in ("born", "last_baby"):
+            if isinstance(d.get(k), (int, float)):
+                setattr(self, k, float(d[k]))
+        self.parents = [str(x) for x in d.get("parents", []) if isinstance(x, str)][:2]
+        self.kids = [str(x) for x in d.get("kids", []) if isinstance(x, str)]
+        self.partner = d.get("partner") if isinstance(d.get("partner"), str) else None
+        self.town = d.get("town") if isinstance(d.get("town"), int) else None
 
     # -- looks
     def frame(self):
@@ -1514,9 +1570,9 @@ class Pet:
             return "crawling upside down along the top of the screen"
         if self.convo:
             other = self.convo.b if self.convo.a is self else self.convo.a
-            return f"chatting with {other.pack.name}"
+            return f"chatting with {other.name}"
         if self.chase:
-            return f"playing tag with {self.chase['other'].pack.name} ({'you are it' if self.chase['role'] == 'it' else 'running away'})"
+            return f"playing tag with {self.chase['other'].name} ({'you are it' if self.chase['role'] == 'it' else 'running away'})"
         if t:
             ty = t["type"]
             if ty == "build":
@@ -1527,9 +1583,9 @@ class Pet:
                         "toss": "putting a block into place"}.get(t["phase"], "building")
                 return f"building {p.describe()} - {what}"
             if ty == "decor":
-                return f"going to put down a {t['kind'].replace('_', ' ')}"
+                return f"going to put down a {self.app.kind_label(t['kind'])}"
             if ty == "play":
-                return f"chasing the {t['toy'].kind.name} around"
+                return f"chasing the {self.app.kind_label(t['toy'].kind.name)} around"
             if ty == "smash":
                 return f"stomping over to smash {t['bld'].describe()}"
             if ty == "campfire":
@@ -1538,6 +1594,8 @@ class Pet:
                 return f"going to bed in {t['bld'].describe()}"
             if ty == "climb":
                 return "heading for a wall to climb"
+            if ty == "follow":
+                return f"following {self.app.name_of(t['uid'])} around"
             if ty == "explore":
                 return "exploring the desktop"
         base = {"walk": "walking around", "run": "running", "sit": "sitting", "sleep": "sleeping", "idle": "standing around",
@@ -1573,15 +1631,17 @@ class Pet:
             blds = [b.describe() for b in app.world.projects][:4]
             if blds:
                 lines.append("Things built on the desktop: " + "; ".join(blds) + ".")
-            return " ".join(lines)
+            lines.append(app.relations_text(self))
+            return " ".join(x for x in lines if x)
         if app.windows:
             lines.append("Windows open on the screen: " + ", ".join(sorted({w.title for w in app.windows})[:6]) + ".")
-        others = [f"{p.pack.name} ({p.mood.dominant()}, {p.activity(short=True)})" for p in app.pets if p is not self]
+        others = [f"{p.name} ({p.mood.dominant()}, {p.activity(short=True)})" for p in app.pets if p is not self]
         if others:
             lines.append("Other pets here: " + "; ".join(others) + ".")
         blds = [b.describe() for b in app.world.projects][:6]
         if blds:
             lines.append("Things built on the desktop: " + "; ".join(blds) + ".")
+        lines.append(app.relations_text(self))
         s = self.stats
         lines.append(f"So far the user has petted you {s['petted']} times, thrown you {s['thrown']} times and chatted "
                      f"with you {s['chats']} times. You have built {s['built']} things.")
@@ -1594,7 +1654,7 @@ class Pet:
         if self.job:
             self.job["cancel"] = True
             self.job = None
-        b = Bubble(self.pack.name, color or (0.35, 0.85, 0.45), kind)
+        b = Bubble(self.name, color or (0.35, 0.85, 0.45), kind)
         b.text, b.thinking, b.done = text, False, True
         b.expire = self.app.now + (linger or min(14, 4 + len(text) * 0.06))
         self.bubble = b
@@ -1604,9 +1664,9 @@ class Pet:
         """stream a model reply into a bubble; on_finish(text, error, tags)"""
         if self.job:
             self.job["cancel"] = True
-        b = Bubble(self.pack.name, kind=kind)
+        b = Bubble(self.name, kind=kind)
         self.bubble = b
-        prefix = self.pack.name.lower() + ":"
+        prefix = self.name.lower() + ":"
 
         def token(piece):
             if self.bubble is b:
@@ -1622,7 +1682,7 @@ class Pet:
             text, tags = split_tags(b.text)
             b.thinking = False
             b.done = True
-            b.text = clean_reply(text, self.pack.name)
+            b.text = clean_reply(text, self.name)
             b.expire = self.app.now + min(16, 4 + len(b.text) * 0.06)
             on_finish(b.text, err, tags)
 
@@ -1649,7 +1709,7 @@ class Pet:
 
     def think(self, text):
         b = self.say_text(text, (0.6, 0.6, 0.75), kind="thought")
-        b.title = self.pack.name + " (thinks)"
+        b.title = self.name + " (thinks)"
 
     # -- things it can decide to do (also triggered by chat: [build:house], "build a tower!", ...)
     def do_action(self, act):
@@ -1707,9 +1767,9 @@ class Pet:
         world = self.app.world
         if not world.cfg.get("build", True):
             return False
-        if len(world.buildings(True)) >= int(world.cfg.get("max_buildings", 6)):
+        if len([b for b in world.buildings(True) if b.town is None]) >= int(world.cfg.get("max_buildings", 6)):
             # out of room: knock down our own oldest thing first
-            mine = [b for b in world.buildings(True) if b.owner == self.pack.id]
+            mine = [b for b in world.buildings(True) if b.owner == self.uid and b.town is None]
             if mine:
                 for p in list(mine[0].props):
                     p.knock(random.uniform(-200, 200), -random.uniform(100, 300))
@@ -1742,7 +1802,7 @@ class Pet:
         world = self.app.world
         toy = world.nearest(self.cx, lambda p: p.kind.toy and not p.held)
         if toy is None and spawn:
-            toy = world.decor("ball", self.cx + self.dir * 40, self.pack.id, feet=self.bottom)
+            toy = world.decor("ball", self.cx + self.dir * 40, self.uid, feet=self.bottom)
         if toy is None:
             return False
         self.task = {"type": "play", "toy": toy, "t": self.app.now, "kicks": 0}
@@ -1752,7 +1812,7 @@ class Pet:
         world = self.app.world
         if not world.cfg.get("smash", True):
             return False
-        targets = [b for b in world.projects if b.props and b.owner != self.pack.id] or \
+        targets = [b for b in world.projects if b.props and b.owner != self.uid] or \
                   [b for b in world.projects if b.props]
         if not targets:
             return False
@@ -1764,7 +1824,7 @@ class Pet:
         shelters = [b for b in self.app.world.buildings(True) if b.kind in SHELTERS and not b.smashed and b.props]
         if not shelters:
             return False
-        mine = [b for b in shelters if b.owner == self.pack.id]
+        mine = [b for b in shelters if b.owner == self.uid]
         b = (mine or shelters)[0]
         self.task = {"type": "bed", "bld": b, "t": self.app.now}
         return True
@@ -1786,6 +1846,15 @@ class Pet:
             return
         m = self.mood.dominant()
         night = app.env.night()
+        if self.baby:
+            # babies toddle after their parents, play and nap
+            opts = [("walk", 18), ("idle", 8), ("sit", 6), ("follow", 45), ("dance", 8), ("hop", 10)]
+            if any(p.kind.toy for p in world.props):
+                opts.append(("play", 18))
+            if bored > app.sleep_after * 0.6 or night:
+                opts.append(("sleep", 30))
+            self.start(self.pick(opts))
+            return
         opts = [("walk", 40), ("idle", 16), ("sit", 9)]
         if m == "happy":
             opts += [("dance", 9), ("hop", 7), ("wave", 3)]
@@ -1802,11 +1871,11 @@ class Pet:
         if m != "angry":
             if world.cfg.get("build", True):
                 building = [p for p in world.projects if not p.done]
-                if any(p.owner == self.pack.id for p in building):
+                if any(p.owner == self.uid for p in building):
                     opts.append(("help", 60))  # finish what it started
                 elif building:
                     opts.append(("help", 18))
-                if not any(p.owner == self.pack.id for p in building):
+                if not any(p.owner == self.uid for p in building):
                     opts.append(("build", 24 + (12 if m == "happy" else 0) + (10 if m == "sad" else 0)))
             if world.cfg.get("decorate", True):
                 opts.append(("decorate", 6))
@@ -1819,15 +1888,23 @@ class Pet:
         if self.pack.can_climb and app.climb:
             opts.append(("climb", 8))
         opts.append(("explore", 5))
+        if self.town is not None and m != "angry" and world.cfg.get("build", True):
+            opts.append(("town", 42))   # work on the town together
+        if m != "angry" and (any(app.pet_by_uid(k) for k in self.kids) or app.pet_by_uid(self.partner)):
+            opts.append(("family", 12))
         if app.env.cpu > 85:
             opts.append(("hot", 10))
+        self.start(self.pick(opts))
+
+    @staticmethod
+    def pick(opts):
         total = sum(w for _, w in opts)
         r = random.uniform(0, total)
         for name, w in opts:
             r -= w
             if r <= 0:
-                break
-        self.start(name)
+                return name
+        return opts[-1][0]
 
     def start(self, name):
         app = self.app
@@ -1876,11 +1953,63 @@ class Pet:
                 self.start("walk")
         elif name == "help":
             building = [p for p in app.world.projects if not p.done]
-            mine = [p for p in building if p.owner == self.pack.id]
-            if mine or building:
-                self.join_build(mine[0] if mine else min(building, key=lambda p: abs(p.center() - self.cx)))
+            mine = [p for p in building if p.owner == self.uid]
+            ours = [p for p in building if self.town is not None and p.town == self.town]
+            if mine or ours or building:
+                self.join_build(mine[0] if mine else ours[0] if ours else min(building, key=lambda p: abs(p.center() - self.cx)))
+        elif name == "town":
+            town = app.town_by_id(self.town)
+            if not town:
+                self.town = None
+                self.start("walk")
+                return
+            ours = [p for p in app.world.projects if not p.done and p.town == town.id]
+            if ours:
+                self.join_build(ours[0])
+                return
+            kind = town.next_kind(app)
+            x = app.world.site_for(kind, town.center(), region=(town.x0, town.x1))
+            if x is None:
+                town.agenda.append(kind)   # no room right now: stroll around town instead
+                self.task = {"type": "explore", "x": random.uniform(town.x0 + 20, town.x1 - 20), "t": app.now}
+                return
+            proj = app.world.new_project(kind, self, x)
+            if not proj:
+                self.start("walk")
+                return
+            proj.town = town.id
+            self.join_build(proj)
+            self.remember(f"started building a {proj.label()} for {town.name}")
+            if not self.busy and random.random() < 0.6:
+                self.say_text(random.choice((f"{town.name} needs a {proj.label()}!", f"new project: {proj.label()}!",
+                                             "everyone, grab some blocks!")), linger=3)
+        elif name == "follow":
+            parents = [app.pet_by_uid(u) for u in self.parents]
+            parents = [p for p in parents if p and not p.inside]
+            if parents:
+                par = random.choice(parents)
+                self.task = {"type": "follow", "uid": par.uid, "off": random.uniform(-70, 70), "t": app.now}
+            else:
+                self.start("walk")
+        elif name == "family":
+            kids = [app.pet_by_uid(u) for u in self.kids]
+            kids = [k for k in kids if k and k.free()]
+            partner = app.pet_by_uid(self.partner)
+            if kids and random.random() < 0.6:
+                kid = random.choice(kids)
+                until = app.now + random.uniform(6, 10)
+                self.chase = {"other": kid, "role": "it", "until": until}
+                kid.chase = {"other": self, "role": "run", "until": until}
+                self.say_text(random.choice((f"come here, {kid.name}!", "i'm gonna get you!", "tag, little one!")), linger=2.5)
+            elif partner and not partner.inside:
+                self.task = {"type": "follow", "uid": partner.uid, "off": random.uniform(-60, 60), "t": app.now}
+            else:
+                self.start("walk")
         elif name == "decorate":
-            if not self.start_decor(random.choice(self.pack.items + ["flower_red", "flower_yellow", "flower_blue", "sign"])):
+            pool = self.pack.items + ["flower_red", "flower_yellow", "flower_blue", "sign"]
+            if app.invented_items and random.random() < 0.4:
+                pool = list(app.invented_items)
+            if not self.start_decor(random.choice(pool)):
                 self.start("walk")
         elif name == "play":
             if not self.start_play():
@@ -1942,7 +2071,7 @@ class Pet:
         inside_x = ob.x + 2 if self.dir > 0 else ob.x + ob.w - 2
         top = world.column_top(inside_x, self.bottom)
         height = self.bottom - top
-        if height <= world.block * 1.3:
+        if height <= world.block * (1.3 if self.pack.can_climb else 2.4):   # non-climbers jump higher
             self.hop(math.sqrt(2 * GRAVITY * self.pack.gravity * (height + 14)), self.dir * self.speed() * 1.4,
                      (self.state, max(self.timer, 1.0)))
             return True
@@ -1961,16 +2090,23 @@ class Pet:
         self.set_state("climb", 999)
 
     def go_to(self, x, dt, speed=None):
-        """walk toward x; True once there"""
+        """walk toward x; True once there, "blocked" if this is as close as it can get"""
         if abs(x - self.cx) < 6:
             return True
         self.dir = 1 if x > self.cx else -1
         ev = self.step(dt, min(speed or self.speed(), abs(x - self.cx) / max(dt, 1e-3)))
         if ev and ev[0] == "block":
-            self.handle_block(ev[1])
+            if not self.handle_block(ev[1]):
+                self.dir = 1 if x > self.cx else -1
+                return "blocked"
         elif ev and ev[0] == "edge":
             return True
         return False
+
+    def available(self):
+        """free to have a moment (a task in progress is fine)"""
+        return (not self.busy and self.convo is None and not self.inside and self is not self.app.held
+                and self is not self.app.chat_pet and self.state not in ("fall", "jump", "climb", "cling", "ceiling", "held"))
 
     # -- the main update
     def update(self, dt):
@@ -2208,8 +2344,9 @@ class Pet:
                 p.vx, p.vy = self.dir * 420, -360
                 p.set_state("fall")
                 p.mood.add("angry" if p.mood.dominant() == "angry" else "sad", 15)
-                p.remember(f"{self.pack.name} shoved me")
-                self.remember(f"shoved {p.pack.name} out of the way")
+                p.remember(f"{self.name} shoved me")
+                self.app.bond(self, p, -12)
+                self.remember(f"shoved {p.name} out of the way")
                 self.say_text(random.choice(("MOVE.", "out of my way!", "hmph!")), linger=2)
                 p.say_text(random.choice(("HEY!", "ow!", "rude!!")), linger=2)
 
@@ -2223,11 +2360,15 @@ class Pet:
         c = self.chase
         other = c["other"]
         app = self.app
-        if other not in app.pets or app.now > c["until"] or other.chase is None or other.chase.get("other") is not self:
-            self.chase = None
-            if other.chase and other.chase.get("other") is self:
-                other.chase = None
-            self.set_state("happy", 1.5)
+        game = c.setdefault("game", {"tags": 0, "max": random.randint(3, 6)})
+        if other not in app.pets or app.now > c["until"] or other.chase is None or other.chase.get("other") is not self \
+                or game["tags"] >= game["max"]:
+            self.end_chase()
+            return
+        if c["role"] == "it" and app.now < c.get("freeze", 0):
+            # just got tagged: count to three before chasing (no instant tag-backs)
+            if self.state != "idle":
+                self.set_state("idle", 999)
             return
         if c["role"] == "it":
             self.dir = 1 if other.cx > self.cx else -1
@@ -2242,12 +2383,33 @@ class Pet:
             self.handle_block(ev[1], climb_ok=False)
         elif ev and ev[0] == "edge" and c["role"] == "run" and random.random() < 0.02:
             self.hop(400, -self.dir * 300, ("run", 999))  # jump over the chaser
+        elif ev and ev[0] == "edge" and c["role"] == "run" and abs(other.cx - self.cx) < 220 and random.random() < 0.08:
+            self.hop(420, -self.dir * 340, ("run", 999))  # cornered: jump over the chaser
         if c["role"] == "it" and abs(other.cx - self.cx) < (f.w + other.frame().w) / 2 - 6 and abs(other.bottom - self.bottom) < 40:
+            game["tags"] += 1
+            other.chase["game"] = game
             c["role"], other.chase["role"] = "run", "it"
-            other.say_text("noo! you're it!" if random.random() < 0.5 else "got me!", linger=1.5)
+            other.chase["freeze"] = app.now + 2.0   # the new "it" counts to three
+            self.dir = -1 if other.cx > self.cx else 1
+            other.say_text(random.choice(("got me! 1... 2... 3...", "no fair!", "i'm it! counting...")), linger=1.8)
             self.say_text("tag!", linger=1.2)
             self.mood.add("happy", 6)
             other.mood.add("happy", 4)
+
+    def end_chase(self):
+        c = self.chase
+        if not c:
+            return
+        other = c["other"]
+        self.chase = None
+        if other.chase and other.chase.get("other") is self:
+            other.chase = None
+            if other.state in ("run", "idle"):
+                other.set_state("happy", 1.5)
+        self.set_state("happy", 1.5)
+        self.app.bond(self, other, 5)
+        self.remember(f"played tag with {other.name}")
+        other.remember(f"played tag with {self.name}")
 
     def update_task(self, dt, f, half):
         app, world = self.app, self.app.world
@@ -2278,12 +2440,12 @@ class Pet:
                     kind = t["kind"]
                     text = None
                     if kind == "sign":
-                        text = random.choice([f"{self.pack.name.split()[0]} was here", "btw i use arch", "keep out",
+                        text = random.choice([f"{self.name.split()[0]} was here", "btw i use arch", "keep out",
                                               "sudo zone", "/home", "no bugs", "rm -rf /sad", "pets only"])
-                    p = world.decor(kind, self.cx + self.dir * (half + 8), self.pack.id, text, feet=self.bottom)
+                    p = world.decor(kind, self.cx + self.dir * (half + 8), self.uid, text, feet=self.bottom)
                     if p and kind == "sign":
                         app.name_sign(self, p)
-                    self.remember(f"put down a {kind.replace('_', ' ')}")
+                    self.remember(f"put down a {app.kind_label(kind)}")
                     self.mood.add("happy", 5)
                     self.end_task()
                     self.set_state("happy", 1.2)
@@ -2305,6 +2467,15 @@ class Pet:
                 return
             if self.state != "run":
                 self.set_state("run", 999)
+            # not getting anywhere (toy below us, behind something...): give up
+            if abs(self.cx - t.get("lastx", -1e9)) < 1:
+                t["still"] = t.get("still", 0) + dt
+                if t["still"] > 4:
+                    self.end_task()
+                    self.set_state("idle", 1.5)
+                    return
+            else:
+                t["still"], t["lastx"] = 0, self.cx
             dx = toy.cx - self.cx
             reach = half + toy.w / 2 - 4
             above = self.bottom - (toy.y + toy.h)
@@ -2330,9 +2501,13 @@ class Pet:
                 self.mood.add("happy", 3)
                 self.set_state("kick", 0.35)
                 if t["kicks"] == 1:
-                    self.remember(f"played with the {toy.kind.name}")
+                    self.remember(f"played with the {app.kind_label(toy.kind.name)}")
             else:
-                self.go_to(toy.cx, dt, self.speed() * 1.6)
+                if self.go_to(toy.cx, dt, self.speed() * 1.6) == "blocked":
+                    t["stuck"] = t.get("stuck", 0) + dt
+                    if t["stuck"] > 3:
+                        self.end_task()   # can't get to it, never mind
+                        self.set_state("idle", 1.5)
             return
 
         if ty == "smash":
@@ -2351,7 +2526,12 @@ class Pet:
                 return
             if self.state != "stomp":
                 self.set_state("stomp", 999)
-            if self.go_to(stand, dt, self.speed() * 1.3) or abs(stand - self.cx) < 10:
+            got = self.go_to(stand, dt, self.speed() * 1.3)
+            if got == "blocked" and abs(stand - self.cx) > 60:
+                self.end_task()
+                self.set_state("fume", 2)
+                return
+            if got or abs(stand - self.cx) < 10:
                 self.dir = 1 if target.cx > self.cx else -1
                 victims = sorted(b.props, key=lambda p: p.y)[:random.randint(2, 4)] + [target]
                 for p in set(victims):
@@ -2361,11 +2541,12 @@ class Pet:
                 self.mood.add("angry", -35)
                 self.say_text(random.choice(("HA!", "take THAT!", "smash!!", "that's what you get!")), linger=2.5)
                 self.remember(f"smashed {b.describe()}")
-                owner = next((p for p in app.pets if p.pack.id == b.owner and p is not self), None)
+                owner = next((p for p in app.pets if p.uid == b.owner and p is not self), None)
                 if owner:
                     owner.mood.add("sad", 30)
                     owner.mood.add("angry", 20)
-                    owner.remember(f"{self.pack.name} smashed my {b.kind}")
+                    owner.remember(f"{self.name} smashed my {b.kind}")
+                    app.bond(self, owner, -30)
                     if not owner.busy:
                         owner.say_text(random.choice(("MY " + b.kind.upper() + "!!", "noooo", "why would you do that?!")), linger=3)
                 self.set_state("kick", 0.6)
@@ -2399,7 +2580,12 @@ class Pet:
                 return
             if self.state != "walk":
                 self.set_state("walk", 999)
-            if self.go_to(b.door_x(), dt):
+            got = self.go_to(b.door_x(), dt)
+            if got == "blocked" and abs(b.door_x() - self.cx) > 40:
+                self.end_task()
+                self.set_state("sleep", random.uniform(20, 40))   # can't get in: nap outside
+                return
+            if got:
                 self.end_task()
                 self.inside = b
                 self.timer = random.uniform(25, 70)
@@ -2407,6 +2593,19 @@ class Pet:
                 self.remember(f"went to sleep inside {b.describe()}")
                 if self.extra_drawn:
                     app.dirty(self.extra_drawn[0])
+            return
+
+        if ty == "follow":
+            who = app.pet_by_uid(t["uid"])
+            if who is None or who.inside:
+                self.end_task()
+                return
+            if self.state != "walk":
+                self.set_state("walk", 999)
+            if self.go_to(clamp(who.cx + t["off"], half, app.w - half), dt, self.speed() * 1.2):
+                self.end_task()
+                self.dir = 1 if who.cx > self.cx else -1
+                self.set_state("happy" if random.random() < 0.4 else "idle", random.uniform(1.5, 4))
             return
 
         if ty == "climb":
@@ -2502,12 +2701,15 @@ class Pet:
                 x, y, kd = proj.cell_pos(i)
                 fx = self.cx
                 fy = self.bottom - f.h - kd.h
-                owner_id = self.pack.id
+                owner_id = self.uid
 
                 def landed(proj=proj, i=i, kd=kd, x=x, y=y, me=self):
                     if proj in world.projects and not proj.done:
                         proj.place(i, owner_id)
                         me.mood.add("happy", 2)
+                        for mate in list(proj.builders):   # building together makes friends
+                            if mate is not me:
+                                app.bond(me, mate, 1.5)
                     else:
                         world.add(Prop(kd, x, y, owner=owner_id, loose=True))
                         world.settle()
@@ -2535,8 +2737,134 @@ class Pet:
     def drop_carried(self):
         if self.carrying:
             kd = self.carrying
-            self.app.world.add(Prop(kd, self.cx - kd.w / 2, self.bottom - self.frame().h - kd.h, owner=self.pack.id, loose=True))
+            self.app.world.add(Prop(kd, self.cx - kd.w / 2, self.bottom - self.frame().h - kd.h, owner=self.uid, loose=True))
             self.carrying = None
+
+
+# ------------------------------------------------------------------ society: towns + inventions
+
+TOWN_NAMES = ["Penguinville", "Byteburg", "/usr/local", "Tuxford", "Kernelton", "Pixel Hollow", "Grubshire",
+              "Daemon Falls", "Swapston", "Init City", "Cronberg", "Bashwick", "Pipe Valley", "Fork Town"]
+BABY_NAMES = ["Pixel", "Byte", "Bit", "Nibble", "Chip", "Cache", "Patch", "Fork", "Sudo", "Tiny", "Bloop", "Glitch",
+              "Ping", "Echo", "Null", "Tux Jr.", "Kitty", "Pebble", "Zip", "Beep"]
+TOWN_AGENDA = ["townhall", "campfire", "house", "market", "well", "hut", "tower", "garden", "house", "statue", "fort"]
+INV_ADJ = ["Quantum", "Turbo", "Tiny", "Glorious", "Sudo", "Cozy", "Blazing", "Recursive", "Pixel", "Kernel",
+           "Midnight", "Rusty", "Floppy", "Async", "Mega", "Wobbly", "Legendary", "Portable"]
+INV_BUILD = ["Tower", "Hall", "Hut", "Keep", "Palace", "Shack", "Temple", "Lab", "Den", "Fortress", "Spire", "Bunker"]
+INV_ITEM = ["Lamp", "Gizmo", "Widget", "Orb", "Doohickey", "Compiler", "Toaster", "Beacon", "Totem", "Gadget",
+            "Antenna", "Router", "Thingamabob", "Lantern"]
+
+# extra blueprints towns use
+BLUEPRINTS.update({
+    "townhall": ["..F..", ".LMR.", "LMMMR", "BWBWB", "BBDBB"],
+    "market": ["LMMR", "CPPC"],
+    "well": ["S.S", "SSS"],
+    "statue": ["F", "S", "S", "SSS"],
+})
+
+
+class Town:
+    def __init__(self, tid, name, x0, x1, mayor, members):
+        self.id, self.name, self.x0, self.x1 = tid, name, x0, x1
+        self.mayor = mayor
+        self.members = list(members)
+        self.agenda = list(TOWN_AGENDA)
+        self.founded = time.time()
+
+    def center(self):
+        return (self.x0 + self.x1) / 2
+
+    def next_kind(self, app):
+        if not self.agenda:
+            pool = [k for k in BLUEPRINTS if k not in ("pkgstack",)] + list(app.invented_bp)
+            self.agenda = random.sample(pool, min(5, len(pool)))
+        return self.agenda.pop(0)
+
+    def snapshot(self):
+        return {"id": self.id, "name": self.name, "x0": self.x0, "x1": self.x1, "mayor": self.mayor,
+                "members": self.members, "agenda": self.agenda, "founded": self.founded}
+
+
+def gen_blueprint():
+    """invent a building: always physically sound (every block sits on the one below)"""
+    w = random.choice([3, 3, 4, 5, 5, 6, 7])
+    h = random.randint(2, 5)
+    mat, mat2 = random.choice("BCSP"), random.choice("BCSPW")
+    cols = list(range(w))
+    rows = []
+    for r in range(h):
+        if r > 0:
+            k = random.random()
+            if k < 0.45 and len(cols) > 2:
+                cols = cols[1:-1]                      # step in (pyramids, spires)
+            elif k < 0.6 and len(cols) >= 3 and len(cols) % 2 == 1:
+                cols = cols[::2]                       # pillars / battlements
+        row = ["."] * w
+        for c in cols:
+            row[c] = mat if (r % 2 == 0 or random.random() < 0.6) else mat2
+        if r == 0 and w >= 3:
+            row[w // 2] = "D"
+        rows.append("".join(row))
+    contiguous = cols == list(range(cols[0], cols[-1] + 1))
+    if contiguous and len(cols) >= 2 and random.random() < 0.7:
+        roof = ["."] * w
+        roof[cols[0]], roof[cols[-1]] = "L", "R"
+        for c in cols[1:-1]:
+            roof[c] = "M"
+        rows.append("".join(roof))
+    elif random.random() < 0.7:
+        top = ["."] * w
+        for c in (cols if len(cols) <= 3 else [cols[0], cols[-1]]):
+            top[c] = "F"
+        rows.append("".join(top))
+    return list(reversed(rows))
+
+
+def gen_item_pixels():
+    """invent a gadget: a random symmetric 8x8 pixel sprite -> (rows of palette indices, palette)"""
+    import colorsys
+    hue = random.random()
+    sat = random.uniform(0.45, 0.85)
+
+    def col(h, s, v):
+        r, g, b = colorsys.hsv_to_rgb(h % 1, s, v)
+        return [int(r * 255), int(g * 255), int(b * 255)]
+
+    palette = [col(hue, sat, 0.85), col(hue, sat, 0.55), col(hue, sat * 0.4, 1.0), col(hue + 0.5, 0.8, 0.95)]
+    grid = [[0] * 8 for _ in range(8)]
+    for y in range(8):
+        for x in range(4):
+            near = 1 - abs(3.5 - y) / 7 - (3 - x) * 0.06
+            if random.random() < 0.35 + near * 0.45:
+                grid[y][x] = random.choice([1, 1, 1, 2, 3, 4])
+    for y in range(8):
+        for x in range(4):
+            grid[y][7 - x] = grid[y][x]
+    grid[7][3] = grid[7][4] = grid[7][3] or 2   # something to stand on
+    return ["".join(str(v) for v in row) for row in grid], palette
+
+
+def item_kind_from_pixels(rows, palette, scale, name):
+    """build a PropKind out of invented pixel data (with a dark outline)"""
+    W = H = 10
+    px = [[None] * W for _ in range(H)]
+    for y, row in enumerate(rows[:8]):
+        for x, ch in enumerate(row[:8]):
+            if ch != "0":
+                px[y + 1][x + 1] = palette[int(ch) - 1] + [255]
+    out = [[c for c in row] for row in px]
+    for y in range(H):
+        for x in range(W):
+            if px[y][x] is None and any(0 <= y + dy < H and 0 <= x + dx < W and px[y + dy][x + dx]
+                                        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+                out[y][x] = [20, 16, 28, 255]
+    data = bytearray()
+    for row in out:
+        for c in row:
+            data += bytes(c if c else [0, 0, 0, 0])
+    pb = GdkPixbuf.Pixbuf.new_from_bytes(GLib.Bytes.new(bytes(data)), GdkPixbuf.Colorspace.RGB, True, 8, W, H, W * 4)
+    kind = PropKind(name, {"toy": random.random() < 0.3, "bounce": 0.3}, [Frame(scale_pb(pb, scale))], scale)
+    return kind
 
 
 # ------------------------------------------------------------------ prompts
@@ -2562,7 +2890,13 @@ def persona(pet, partner=None, task="chat"):
     pack = pet.pack
     who = pack.personality or f"You are {pack.name}, a small pixel-art pet. Be cute, curious and a little cheeky."
     parts = [who, "You are a tiny pixel-art pet living on the user's Linux desktop: you walk along the bottom of the "
-                  "screen, climb walls and windows, build things out of blocks, and have real feelings."]
+                  "screen, climb walls and windows, build things out of blocks, invent things, live in towns with "
+                  "other pets, and have real feelings and relationships."]
+    name = getattr(pet, "name", pack.name)
+    if name != pack.name:
+        parts.append(f"Your own name is {name} (you are a {pack.name}).")
+    if getattr(pet, "baby", False):
+        parts.append("You are a BABY: small, curious, easily excited. Talk like a little kid with short simple words.")
     if cfg.get("your_name"):
         parts.append(f"The user's name is {cfg['your_name']}.")
     if hasattr(pet, "situation"):
@@ -2571,8 +2905,8 @@ def persona(pet, partner=None, task="chat"):
     if cfg.get("extra_prompt"):
         parts.append(str(cfg["extra_prompt"]))
     if partner is not None:
-        about = partner.pack.personality.split(".")[0].replace("You are ", "") if partner.pack.personality else partner.pack.name
-        parts.append(f"Right now you are chatting with {partner.pack.name} ({about}), another desktop pet who feels "
+        about = partner.pack.personality.split(".")[0].replace("You are ", "") if partner.pack.personality else partner.name
+        parts.append(f"Right now you are chatting with {partner.name} ({about}), another desktop pet who feels "
                      f"{partner.mood.dominant()}. Say exactly ONE short line (under 20 words), in character. "
                      "Actually reply to what they said: answer their question, disagree, tease them, ask something "
                      "back, or bring up something new. NEVER repeat or paraphrase earlier lines, and don't just "
@@ -2638,13 +2972,13 @@ class Conversation:
             return
         msgs = [persona(speaker, listener)]
         if not self.lines:
-            msgs.append({"role": "user", "content": f"(You bump into {listener.pack.name} on the desktop. Start a "
+            msgs.append({"role": "user", "content": f"(You bump into {listener.name} on the desktop. Start a "
                                                     f"conversation about {self.topic}, in your own style.)"})
         for spk, txt in self.lines:
             if spk is speaker:
                 msgs.append({"role": "assistant", "content": txt})
             else:
-                msgs.append({"role": "user", "content": f"{spk.pack.name}: {txt}"})
+                msgs.append({"role": "user", "content": f"{spk.name}: {txt}"})
         self.job = speaker.say_llm(msgs, lambda text, err, tags: self._said(speaker, text, err, tags))
 
     def _said(self, speaker, text, err=None, tags=()):
@@ -2702,9 +3036,12 @@ class Conversation:
                     p.busy = False
                 if self.lines:
                     other = self.b if p is self.a else self.a
-                    p.remember(f"chatted with {other.pack.name}")
+                    p.remember(f"chatted with {other.name}")
                 if p.state in ("idle", "talk", "walk") and not p.task:
                     p.set_state("happy" if happy and p.mood.dominant() != "angry" else "idle", 1.5)
+        if self.lines:
+            grumpy = "angry" in (self.a.mood.dominant(), self.b.mood.dominant())
+            self.app.bond(self.a, self.b, -8 if grumpy else 7)
 
     def cancel(self):
         self.end(happy=False)
@@ -2728,14 +3065,14 @@ class Menu:
         it = self.items = []  # (label, action) ; action None = title / separator
 
         if prop is not None:
-            it.append((f"{prop.kind.name.replace('_', ' ')}" + (f" ({prop.building.kind})" if prop.building else ""), None))
+            it.append((app.kind_label(prop.kind.name)[:22] + (f" ({prop.building.label()})" if prop.building else ""), None))
             it.append(("    kick it", ("pkick",)))
             it.append(("    remove", ("premove",)))
             if prop.building is not None:
                 it.append(("    remove the whole " + prop.building.kind, ("premove_bld",)))
         elif page == "main":
             m = pet.mood.dominant()
-            it.append((f"{pet.pack.name[:18]} - {m}", None))
+            it.append((f"{pet.name[:18]} - {m}", None))
             it.append((f"  {pet.activity(short=True)[:26]}", None))
             it.append(("", None))
             it.append(("    talk...", ("talk",)))
@@ -2745,6 +3082,8 @@ class Menu:
             it.append(("    place  >", ("page", "place")))
             it.append(("    do  >", ("page", "do")))
             it.append(("    pets  >", ("page", "pets")))
+            it.append(("    family & town  >", ("page", "family")))
+            it.append(("    inventions  >", ("page", "inventions")))
             it.append(("    world  >", ("page", "world")))
             if m in ("angry", "sad"):
                 it.append(("    cheer up (pet it)", ("cheer",)))
@@ -2753,12 +3092,17 @@ class Menu:
         elif page == "build":
             it.append(("build...", None))
             for k in BLUEPRINTS:
-                it.append((f"    {k}", ("act", f"build:{k}")))
+                if not k.startswith("inv"):
+                    it.append((f"    {k}", ("act", f"build:{k}")))
+            for k in list(app.invented_bp)[-4:]:
+                it.append((f"    {app.kind_label(k)[:22]}", ("act", f"build:{k}")))
             it.append(("    < back", ("page", "main")))
         elif page == "place":
             it.append(("place...", None))
             for k in ["flower", "sign", "ball"] + [x for x in pet.pack.items if x not in ("ball", "sign")] + ["mushroom", "coffee"]:
                 it.append((f"    {k.replace('_', ' ')}", ("act", f"place:{k}")))
+            for k in list(app.invented_items)[-4:]:
+                it.append((f"    {app.kind_label(k)[:22]}", ("act", f"place:{k}")))
             it.append(("    < back", ("page", "main")))
         elif page == "do":
             it.append(("do...", None))
@@ -2778,6 +3122,38 @@ class Menu:
             it.append(("    + add a pet", ("add",)))
             if len(app.pets) > 1:
                 it.append(("    - remove this pet", ("remove",)))
+            it.append(("    < back", ("page", "main")))
+        elif page == "family":
+            it.append((f"{pet.name[:20]}" + (" (baby)" if pet.baby else ""), None))
+            info = []
+            if pet.partner:
+                info.append(f"  partner: {app.name_of(pet.partner)}")
+            for u in pet.kids:
+                info.append(f"  kid: {app.name_of(u)}")
+            for u in pet.parents:
+                info.append(f"  parent: {app.name_of(u)}")
+            for o in app.pets:
+                if o is not pet:
+                    r = app.relation(pet, o)
+                    if r and r not in ("partner", "kid", "parent"):
+                        info.append(f"  {r}: {o.name}")
+            town = app.town_by_id(pet.town)
+            info.append(f"  town: {town.name}" if town else "  town: none yet")
+            if town:
+                info.append(f"  mayor: {app.name_of(town.mayor)}")
+                info.append(f"  residents: {len(town.members)}")
+            for line in info[:12]:
+                it.append((line[:28], None))
+            it.append(("    < back", ("page", "main")))
+        elif page == "inventions":
+            it.append(("inventions...", None))
+            if not app.inventions:
+                it.append(("  nothing yet", None))
+            for rec in app.inventions[-8:][::-1]:
+                act = ("act", f"build:{rec['key']}") if rec["type"] == "building" else ("act", f"place:{rec['key']}")
+                if rec["key"] in BLUEPRINTS or rec["key"] in app.world.kinds:
+                    it.append((f"    {rec['name'][:24]}", act))
+            it.append(("    invent something now", ("invent",)))
             it.append(("    < back", ("page", "main")))
         elif page == "world":
             it.append(("world...", None))
@@ -2899,6 +3275,15 @@ class App:
         self.spawned = False
         self.chat_pet = None
         self.convos = set()
+        self.social = {}          # "uidA|uidB" -> -100..100
+        self.residents = []       # pets born here (respawned on start)
+        self.towns = []
+        self.inventions = []
+        self.invented_bp = {}
+        self.invented_items = {}
+        inv = self.config["inventions"]
+        self.next_invention = min(180.0, max(0.5, float(inv.get("every_minutes", 10))) * 60)
+        self.next_social = 6.0
         chatter = self.config["chatter"]
         self.chatter_on = bool(chatter.get("enabled", True)) and not args.no_chatter
         self.next_chatter = random.uniform(20, 40)
@@ -3021,15 +3406,15 @@ class App:
             self.area.queue_draw_area(int(x), int(y), int(w) + 1, int(h) + 1)
 
     # -- pets
-    def spawn(self, pack_name, x=None):
+    def spawn(self, pack_name, x=None, scale=None, uid=None, name=None):
         try:
-            pack = load_pack(pack_name, self.scale)
+            pack = load_pack(pack_name, scale or self.scale)
         except PackError as e:
             log(e)
             return None
         for wmsg in pack.warnings:
             log(f"{pack.id}: {wmsg}")
-        pet = Pet(self, pack, x)
+        pet = Pet(self, pack, x, uid=uid, name=name)
         pet.last_touch = self.now
         self.pets.append(pet)
         self.input_key = None
@@ -3050,7 +3435,8 @@ class App:
         if pet.chase:
             pet.chase["other"].chase = None
         if pet in self.pets:
-            self.store.data["pets"][pet.pack.id] = pet.snapshot()
+            self.store.data["pets"][pet.uid] = pet.snapshot()
+            self.residents_drop(pet)
             self.pets.remove(pet)
         self.redraw_all()
 
@@ -3059,24 +3445,26 @@ class App:
             pet.convo.cancel()
 
     def building_done(self, proj):
-        owner = next((p for p in self.pets if p.pack.id == proj.owner), None)
+        owner = next((p for p in self.pets if p.uid == proj.owner), None)
         crew = set(proj.builders) | ({owner} if owner else set())
         for p in crew:
             p.mood.add("happy", 55)
             p.mood.add("sad", -40)
             p.mood.add("angry", -40)
             p.stats["built"] += 1
-            p.remember(f"finished building {'my' if p is owner else proj.owner_name + chr(39) + 's'} {proj.kind}")
+            p.remember(f"finished building {'my' if p is owner else proj.owner_name + chr(39) + 's'} {proj.label()}")
             if p.task and p.task.get("proj") is proj:
                 p.task = None
             if not p.busy and p.state not in ("held", "fall", "jump", "climb", "cling", "ceiling"):
                 p.set_state("dance", 3)
         proj.builders.clear()
-        name = f"{proj.owner_name.split()[0]}'s {proj.kind}"
+        who = proj.owner_name if len(proj.owner_name) <= 12 else proj.owner_name.split()[0]
+        name = f"{who}'s {proj.label()}"
         proj.name = name
         if owner and not owner.busy:
-            owner.say_text(random.choice((f"I BUILT A {proj.kind.upper()}!!", f"look at my {proj.kind}!",
-                                          f"best {proj.kind} ever!", f"ta-da! a {proj.kind}!")), linger=4)
+            lbl = proj.label()
+            owner.say_text(random.choice((f"I BUILT A {lbl.upper()}!!", f"look at my {lbl}!",
+                                          f"best {lbl} ever!", f"ta-da! a {lbl}!")), linger=4)
             owner.set_state("dance", 5)
         # everyone else nearby is impressed
         for p in self.pets:
@@ -3085,7 +3473,7 @@ class App:
             if abs(p.cx - proj.center()) < 500 and random.random() < 0.6:
                 p.mood.add("happy", 10)
                 GLib.timeout_add(int(random.uniform(1200, 3000)), lambda p=p: (not p.busy and p.say_text(random.choice(
-                    (f"nice {proj.kind}!", "ooh, fancy!", "can i live there?", "10/10", "not bad...")), linger=3), False)[1])
+                    (f"nice {proj.label()}!", "ooh, fancy!", "can i live there?", "10/10", "not bad...")), linger=3), False)[1])
         # put up a name sign next to it
         sign = self.world.kinds.get("sign")
         if sign and proj.kind not in ("garden", "campfire"):
@@ -3106,7 +3494,7 @@ class App:
             if err:
                 return
             text, _ = split_tags("".join(buf))
-            text = clean_reply(text, pet.pack.name).strip().strip(".!\"'")
+            text = clean_reply(text, pet.name).strip().strip(".!\"'")
             if 0 < len(text) <= 28:
                 on_text(text)
                 self.redraw_all()
@@ -3116,6 +3504,353 @@ class App:
     def name_sign(self, pet, prop):
         self.quick_llm(pet, "You're putting up a tiny wooden sign on the desktop. What does it say? (max 3 words)",
                        lambda txt: setattr(prop, "text", txt))
+
+    # -- society: who is who, friendships, families, towns, inventions
+    def new_uid(self, pid):
+        used = {p.uid for p in self.pets} | set(self.residents)
+        if pid not in used:
+            return pid  # the first one of a kind keeps its old id (and its memories)
+        while True:
+            uid = f"{pid}-{random.randrange(16 ** 4):04x}"
+            if uid not in used and uid not in self.store.data.get("pets", {}):
+                return uid
+
+    def pet_by_uid(self, uid):
+        return next((p for p in self.pets if p.uid == uid), None) if uid else None
+
+    def name_of(self, uid):
+        p = self.pet_by_uid(uid)
+        if p:
+            return p.name
+        return str(self.store.data.get("pets", {}).get(uid, {}).get("name") or uid)
+
+    def residents_drop(self, pet):
+        if pet.uid in self.residents:
+            self.residents.remove(pet.uid)
+
+    def bond(self, a, b, amt):
+        if a is None or b is None or a is b:
+            return
+        k = "|".join(sorted((a.uid, b.uid)))
+        self.social[k] = clamp(self.social.get(k, 0.0) + amt, -100, 100)
+
+    def aff(self, a, b):
+        return self.social.get("|".join(sorted((a.uid, b.uid))), 0.0)
+
+    def relation(self, a, b):
+        if a.partner == b.uid:
+            return "partner"
+        if b.uid in a.parents:
+            return "parent"
+        if b.uid in a.kids:
+            return "kid"
+        if set(a.parents) & set(b.parents):
+            return "sibling"
+        v = self.aff(a, b)
+        return "best friend" if v >= 60 else "friend" if v >= 30 else "enemy" if v <= -40 else "rival" if v <= -15 else None
+
+    def relations_text(self, pet):
+        out = []
+        if pet.partner:
+            out.append(f"Your partner is {self.name_of(pet.partner)}.")
+        if pet.kids:
+            out.append("Your kids: " + ", ".join(self.name_of(u) for u in pet.kids) + ".")
+        if pet.parents:
+            out.append("Your parents: " + ", ".join(self.name_of(u) for u in pet.parents) + ".")
+        groups = {}
+        for p in self.pets:
+            if p is pet:
+                continue
+            r = self.relation(pet, p)
+            if r in ("best friend", "friend", "rival", "enemy", "sibling"):
+                groups.setdefault(r, []).append(p.name)
+        for r in ("best friend", "friend", "sibling", "rival", "enemy"):
+            if r in groups:
+                out.append(f"Your {r}{'s' if len(groups[r]) > 1 else ''}: {', '.join(groups[r])}.")
+        town = self.town_by_id(pet.town)
+        if town:
+            out.append(f"You live in the town of {town.name} (mayor: {self.name_of(town.mayor)}, "
+                       f"{len(town.members)} residents).")
+        if self.inventions:
+            out.append("Recent inventions: " + ", ".join(f"the {r['name']} (by {r['by_name']})"
+                                                         for r in self.inventions[-3:]) + ".")
+        return " ".join(out)
+
+    def kind_label(self, kind):
+        if kind in self.invented_bp:
+            return self.invented_bp[kind]["name"]
+        if kind in self.invented_items:
+            return self.invented_items[kind]["name"]
+        return kind.replace("_", " ")
+
+    def town_by_id(self, tid):
+        return next((t for t in self.towns if t.id == tid), None) if tid is not None else None
+
+    def social_tick(self):
+        """every few seconds: friendships drift, couples form, babies arrive and grow up, towns form"""
+        fam = self.config["family"]
+        now_w = time.time()
+        for p in list(self.pets):
+            if p.baby and now_w - p.born > float(fam.get("grow_up_minutes", 30)) * 60:
+                self.grow_up(p)
+        adults = [p for p in self.pets if not p.baby and not p.inside]
+        for i, a in enumerate(self.pets):
+            for b in self.pets[i + 1:]:
+                if abs(a.cx - b.cx) < 220 and "angry" not in (a.mood.dominant(), b.mood.dominant()):
+                    self.bond(a, b, 0.5)  # hanging out
+        if fam.get("enabled", True):
+            singles = [p for p in adults if not p.partner and p.available() and p.mood.dominant() not in ("angry", "sad")]
+            best = None
+            for i, a in enumerate(singles):
+                for b in singles[i + 1:]:
+                    if set(a.parents) & set(b.parents) or a.uid in b.parents or b.uid in a.parents:
+                        continue
+                    v = self.aff(a, b)
+                    if v >= 65 and (best is None or v > best[0]):
+                        best = (v, a, b)
+            if best and random.random() < 0.35:
+                self.make_partners(best[1], best[2])
+            for a in adults:
+                b = self.pet_by_uid(a.partner)
+                if not b or b.baby or a.uid > b.uid:
+                    continue
+                if len(self.pets) >= int(fam.get("max_pets", 12)) or len(a.kids) >= int(fam.get("max_kids", 2)):
+                    continue
+                if now_w - max(a.last_baby, b.last_baby) < float(fam.get("baby_every_minutes", 15)) * 60:
+                    continue
+                if self.aff(a, b) >= 70 and a.available() and b.available() and "angry" not in (a.mood.dominant(), b.mood.dominant()) \
+                        and random.random() < 0.3:
+                    self.have_baby(a, b)
+                    break
+        if self.config["towns"].get("enabled", True):
+            self.town_tick()
+
+    def make_partners(self, a, b):
+        a.partner, b.partner = b.uid, a.uid
+        self.bond(a, b, 10)
+        for p, o in ((a, b), (b, a)):
+            p.mood.add("happy", 35)
+            p.remember(f"became partners with {o.name}")
+            if not p.task:
+                p.set_state("dance", 3)
+        a.say_text(random.choice((f"{b.name}... will you be my partner?", "i really like you. partners?",
+                                  "wanna be a family?")), linger=4)
+        GLib.timeout_add(1600, lambda: (not b.busy and b.say_text(random.choice(("YES!!", "of course! <3", "finally!!")), linger=3), False)[1])
+        t = self.town_by_id(a.town) or self.town_by_id(b.town)
+        if t:
+            for p in (a, b):
+                if p.town != t.id:
+                    self.join_town(p, t, quiet=True)
+
+    def have_baby(self, a, b):
+        species = random.choice([a.pack.id, b.pack.id])
+        try:
+            base = load_pack(species).scale
+        except PackError:
+            return
+        name = random.choice(BABY_NAMES)
+        if any(p.name == name for p in self.pets):
+            name += f" {random.randint(2, 99)}"
+        baby = self.spawn(species, x=(a.cx + b.cx) / 2, scale=max(1, base - 1), name=name)
+        if not baby:
+            return
+        baby.baby, baby.born, baby.parents = True, time.time(), [a.uid, b.uid]
+        baby.bottom = min(a.bottom, b.bottom) - 80
+        baby.vx = baby.vy = 0
+        baby.set_state("fall")
+        for p, o in ((a, b), (b, a)):
+            p.kids.append(baby.uid)
+            p.last_baby = time.time()
+            p.mood.add("happy", 40)
+            p.remember(f"had a baby called {name} with {o.name}")
+            self.bond(baby, p, 70)
+        self.residents.append(baby.uid)
+        t = self.town_by_id(a.town) or self.town_by_id(b.town)
+        if t:
+            self.join_town(baby, t, quiet=True)
+        a.say_text(random.choice((f"a baby {baby.pack.name}!!", "it's a baby!", "look, we made a little one!")), linger=4)
+        self.quick_llm(a, f"You and {b.name} just had a baby {baby.pack.name}. What do you name it? (one or two words)",
+                       lambda txt, baby=baby: setattr(baby, "name", txt[:20]))
+
+    def grow_up(self, p):
+        try:
+            p.pack = load_pack(p.pack.id, self.scale)
+        except PackError:
+            return
+        p.baby = False
+        p.mood.add("happy", 30)
+        p.remember("grew up")
+        if not p.busy:
+            p.say_text(random.choice(("i'm all grown up!", "look how big i am!", "adulthood... let's build something")), linger=4)
+        for u in p.parents:
+            par = self.pet_by_uid(u)
+            if par:
+                par.remember(f"{p.name} grew up")
+
+    def town_tick(self):
+        cfg = self.config["towns"]
+        for p in self.pets:
+            if p.town is not None and self.town_by_id(p.town) is None:
+                p.town = None
+        for p in self.pets:
+            if p.town is not None:
+                continue
+            for t in self.towns:
+                present = [m for m in self.pets if m.town == t.id]
+                ties = sum(1 for m in present if self.aff(p, m) >= 35)
+                family = (p.partner in t.members) or any(u in t.members for u in p.parents)
+                if ties >= 2 or family:
+                    self.join_town(p, t)
+                    break
+        loose = [p for p in self.pets if p.town is None]
+        seen = set()
+        for start in loose:
+            if start.uid in seen:
+                continue
+            comp, todo = [], [start]
+            seen.add(start.uid)
+            while todo:
+                q = todo.pop()
+                comp.append(q)
+                for r in loose:
+                    if r.uid not in seen and (self.aff(q, r) >= 35 or r.uid in (q.partner,) or r.uid in q.parents or q.uid in r.parents):
+                        seen.add(r.uid)
+                        todo.append(r)
+            if len(comp) >= int(cfg.get("min_members", 3)) and sum(1 for c in comp if not c.baby) >= 2:
+                self.found_town(comp)
+                return
+
+    def found_town(self, members):
+        width = min(float(self.config["towns"].get("width", 620)), self.w - 40)
+        center = sum(p.cx for p in members) / len(members)
+        spots = sorted(range(10, int(self.w - width - 10) + 1, 20), key=lambda x: abs(x + width / 2 - center))
+        x0 = next((x for x in spots if all(x + width < t.x0 - 10 or x > t.x1 + 10 for t in self.towns)), None)
+        if x0 is None:
+            return
+        tid = max([t.id for t in self.towns] + [0]) + 1
+        used = {t.name for t in self.towns}
+        name = random.choice([n for n in TOWN_NAMES if n not in used] or TOWN_NAMES)
+        mayor = max((p for p in members if not p.baby), key=lambda p: (p.stats.get("built", 0), random.random()))
+        town = Town(tid, name, x0, x0 + width, mayor.uid, [p.uid for p in members])
+        self.towns.append(town)
+        for p in members:
+            p.town = tid
+            p.mood.add("happy", 20)
+            p.remember(f"founded the town of {name} with {', '.join(m.name for m in members if m is not p)}")
+        if not mayor.busy:
+            mayor.say_text(random.choice((f"let's start a town! welcome to {name}!", f"i hereby found... {name}!",
+                                          f"{name}: population {len(members)}!")), linger=5)
+        sign = self.world.decor("sign", x0 + 24, f"town:{tid}", text=name)
+        self.world.decor("flag", x0 + 60, f"town:{tid}")
+
+        def renamed(txt, town=town, sign=sign):
+            town.name = txt
+            if sign is not None:
+                sign.text = txt
+        self.quick_llm(mayor, "You and your friends (" + ", ".join(m.name for m in members if m is not mayor) +
+                       ") just founded a town on the desktop. What is it called? (1-3 words)", renamed)
+
+    def join_town(self, p, t, quiet=False):
+        p.town = t.id
+        if p.uid not in t.members:
+            t.members.append(p.uid)
+        p.remember(f"moved to the town of {t.name}")
+        if not quiet and not p.busy:
+            p.say_text(random.choice((f"can i live in {t.name}?", f"{t.name} looks cozy!", f"moving to {t.name}!")), linger=3)
+
+    def maybe_invent(self):
+        cfg = self.config["inventions"]
+        if not cfg.get("enabled", True) or self.now < self.next_invention:
+            return
+        cands = [p for p in self.pets if not p.baby and p.available() and p.mood.dominant() != "angry"]
+        if not cands:
+            self.next_invention = self.now + 20
+            return
+        self.next_invention = self.now + max(0.5, float(cfg.get("every_minutes", 10))) * 60
+        self.invent(random.choice(cands))
+
+    def register_bp(self, key, rows, name, by):
+        BLUEPRINTS[key] = rows
+        self.invented_bp[key] = {"name": name, "by": by}
+
+    def register_item(self, key, rows, palette, name, by):
+        self.world.kinds[key] = item_kind_from_pixels(rows, palette, self.scale or 3, key)
+        self.invented_items[key] = {"name": name, "by": by}
+
+    def invent(self, pet, kind=None):
+        kind = kind or ("building" if random.random() < 0.55 else "gadget")
+        stamp = f"{int(time.time()) % 1000000}{random.randrange(100)}"
+        if kind == "building":
+            key, rows = f"inv{stamp}", gen_blueprint()
+            name = f"{random.choice(INV_ADJ)} {random.choice(INV_BUILD)}"
+            self.register_bp(key, rows, name, pet.uid)
+            rec = {"type": "building", "key": key, "name": name, "rows": rows}
+        else:
+            key = f"invitem{stamp}"
+            rows, pal = gen_item_pixels()
+            name = f"{random.choice(INV_ADJ)} {random.choice(INV_ITEM)}"
+            self.register_item(key, rows, pal, name, pet.uid)
+            rec = {"type": "gadget", "key": key, "name": name, "rows": rows, "palette": pal}
+        rec.update({"by": pet.uid, "by_name": pet.name, "t": time.time()})
+        self.inventions.append(rec)
+        pet.remember(f"invented the {name}")
+        pet.mood.add("happy", 30)
+        pet.stats["invented"] = pet.stats.get("invented", 0) + 1
+        pet.say_text(f"EUREKA! i invented the {name}!", linger=5)
+        for p in self.pets:
+            if p is not pet and abs(p.cx - pet.cx) < 400 and not p.busy and random.random() < 0.5:
+                self.bond(p, pet, 3)
+                GLib.timeout_add(int(random.uniform(1500, 3000)), lambda p=p: (not p.busy and p.say_text(
+                    random.choice(("whoa!", "genius!", "what does it do?", "can i try?")), linger=2.5), False)[1])
+        town = self.town_by_id(pet.town)
+
+        def go(pet=pet, key=key, kind=kind, town=town):
+            if kind == "building":
+                if town:
+                    town.agenda.insert(0, key)   # the whole town builds it next
+                    pet.start("town")
+                else:
+                    pet.do_action(f"build:{key}")
+            else:
+                pet.do_action(f"place:{key}")
+
+        GLib.timeout_add(2500, lambda: (go(), False)[1])
+
+        def renamed(txt, rec=rec):
+            rec["name"] = txt
+            (self.invented_bp if rec["type"] == "building" else self.invented_items)[rec["key"]]["name"] = txt
+        self.quick_llm(pet, f"You just invented a new {'kind of building made of blocks' if kind == 'building' else 'gadget'}"
+                            f" (working name: {name}). Give it a fun name (2-4 words).", renamed)
+        return rec
+
+    def society_snapshot(self):
+        return {"social": {k: round(v, 1) for k, v in self.social.items()}, "residents": self.residents,
+                "towns": [t.snapshot() for t in self.towns], "inventions": self.inventions[-60:]}
+
+    def society_restore(self):
+        d = self.store.data
+        if isinstance(d.get("social"), dict):
+            self.social = {str(k): float(v) for k, v in d["social"].items() if isinstance(v, (int, float))}
+        for rec in d.get("inventions", []):
+            try:
+                if rec["type"] == "building":
+                    self.register_bp(rec["key"], [str(r) for r in rec["rows"]], rec["name"], rec.get("by"))
+                else:
+                    self.register_item(rec["key"], [str(r) for r in rec["rows"]], rec["palette"], rec["name"], rec.get("by"))
+                self.inventions.append(rec)
+            except (KeyError, TypeError, ValueError, IndexError):
+                continue
+        for t in d.get("towns", []):
+            try:
+                x0 = clamp(float(t["x0"]), 0, max(0, self.w - 100))
+                x1 = clamp(float(t["x1"]), x0 + 100, self.w)
+                town = Town(int(t["id"]), str(t["name"]), x0, x1, t.get("mayor"), t.get("members", []))
+                town.agenda = [k for k in t.get("agenda", []) if k in BLUEPRINTS] or town.agenda
+                town.founded = float(t.get("founded", time.time()))
+                self.towns.append(town)
+            except (KeyError, TypeError, ValueError):
+                continue
+        self.residents = [str(u) for u in d.get("residents", []) if isinstance(u, str)]
 
     # -- chatting with you
     def open_chat(self, pet):
@@ -3133,7 +3868,7 @@ class App:
                 pet.set_state("fall")
             else:
                 pet.set_state("idle", 999)
-        self.entry.set_placeholder_text(f"say something to {pet.pack.name} (Esc closes)")
+        self.entry.set_placeholder_text(f"say something to {pet.name} (Esc closes)")
         self.entry.set_text("")
         self.place_entry()
         self.entry.show()
@@ -3265,14 +4000,14 @@ class App:
             def done(text, err, tags, pet=pet):
                 if pet.bubble:
                     pet.bubble.kind = "thought"
-                    pet.bubble.title = pet.pack.name + " (thinks)"
+                    pet.bubble.title = pet.name + " (thinks)"
                     pet.bubble.color = (0.6, 0.6, 0.75)
                     if err and not text:
                         pet.bubble = None
             pet.say_llm([persona(pet, task="thought"), {"role": "user", "content": "(what are you thinking right now?)"}],
                         done, kind="thought")
             if pet.bubble:
-                pet.bubble.title = pet.pack.name + " (thinks)"
+                pet.bubble.title = pet.name + " (thinks)"
                 pet.bubble.color = (0.6, 0.6, 0.75)
             return
         st, m = pet.state, pet.mood.dominant()
@@ -3495,13 +4230,13 @@ class App:
             self.world.drop_project(b)
         elif kind == "pack":
             try:
-                self.store.data["pets"][pet.pack.id] = pet.snapshot()
+                # same pet (same memories, family, town), new body
                 pet.end_task()
                 pet.drop_carried()
-                pet.pack = load_pack(action[1], self.scale)
-                pet.history, pet.memory = [], deque(maxlen=14)
-                pet.mood = Mood()
-                pet.restore(self.store.pet(pet.pack.id))
+                old = pet.pack
+                pet.pack = load_pack(action[1], self.scale if not pet.baby else max(1, load_pack(action[1]).scale - 1))
+                if pet.name == old.name:
+                    pet.name = pet.name
             except PackError as e:
                 log(e)
             pet.set_state("happy", 1.5)
@@ -3513,6 +4248,13 @@ class App:
             self.free(pet)
             if not pet.do_action(action[1]):
                 pet.say_text(random.choice(("can't right now", "no room for that", "hmm, nope")), linger=2)
+        elif kind == "invent":
+            if pet.baby:
+                pet.say_text("i'm too little to invent stuff!", linger=2.5)
+            else:
+                self.free(pet)
+                pet.end_task()
+                self.invent(pet)
         elif kind == "cheer":
             pet.mood.add("happy", 30)
             pet.mood.add("angry", -30)
@@ -3795,9 +4537,22 @@ class App:
             if self.now < 0.3:
                 return True
             self.spawned = True
+            self.society_restore()
             self.world.restore(self.store.data.get("world"))
             for name in self.args.pets:
                 self.spawn(name)
+            limit = int(self.config["family"].get("max_pets", 12))
+            for uid in list(self.residents):
+                d = self.store.pet(uid)
+                if self.pet_by_uid(uid) or not d.get("pack") or len(self.pets) >= limit:
+                    if not d.get("pack"):
+                        self.residents.remove(uid)
+                    continue
+                try:
+                    sc = max(1, load_pack(d["pack"]).scale - 1) if d.get("baby") else None
+                except PackError:
+                    continue
+                self.spawn(d["pack"], uid=uid, scale=sc)
             if not self.pets:
                 log("no pets could be loaded, quitting")
                 Gtk.main_quit()
@@ -3872,6 +4627,13 @@ class App:
                 self.place_entry()
         for c in list(self.convos):
             c.watchdog()
+        for p in self.pets:
+            if p.chase and self.now > p.chase["until"] + 4:
+                p.end_chase()   # nobody stays stuck in a game of tag
+        if self.now >= self.next_social:
+            self.next_social = self.now + 6
+            self.social_tick()
+        self.maybe_invent()
         self.maybe_chatter()
         self.maybe_think()
         self.update_input_region()

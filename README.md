@@ -12,6 +12,9 @@ Little pets that live on your Wayland desktop. They:
 - **put things down**: flowers, signs with things written on them, their favourite items;
 - chase a ball, play tag, dance, nap (in a house they built, if they have one), sit around the campfire;
 - have **moods**: happy, sad or angry, depending on what you say to them and how you treat them;
+- make **friends** (and enemies), become **partners** and have **babies** that grow up;
+- found **towns** together and build them up: a town hall, a market, houses, a well, a campfire, a statue...;
+- **invent** new kinds of buildings and gadgets every 10 minutes (or every hour, you choose);
 - **talk** to you and to each other through a local LLM.
 
 Each pet knows what it's doing, how it feels, what just happened to it, the time, how hard your CPU is working and which windows are open. It remembers you, its moods and everything it built between restarts.
@@ -116,6 +119,48 @@ Every pet has a happy, a sad and an angry level, and these change over time.
 - Blueprints: `house tower wall pyramid campfire garden fort hut igloo crypt pkgstack`.
 - Props: blocks (brick, crate, stone, window, door, roof), flag, campfire, flowers, mushroom, sign, fish, yarn, ball, package, coffee. They live in `props/`; `tools/gen_props.py` makes them, and you can add your own to `~/.local/share/deskpet/props/props.json`.
 
+## Families, towns and inventions
+
+![a pet town with a town hall, market, invented gadgets and a baby penguin](docs/town.png)
+
+**Friendships:** every pair of pets has a relationship from -100 to 100, which changes as they live together:
+
+| raises it | lowers it |
+|---|---|
+| hanging out near each other | getting shoved |
+| chatting | a grumpy chat |
+| playing tag | having their building smashed |
+| building the same thing | |
+
+From that, pets become friends, best friends, rivals or enemies, and they know it. Their relationships go into every conversation.
+
+**Families:**
+- Best friends who are happy together become **partners**.
+- Partners sometimes have a **baby**: a smaller version of one of them, named by the parents.
+- Babies toddle after their parents, play and nap, and grow up after `grow_up_minutes`.
+- Parents play tag with their kids.
+- Babies are remembered and come back every time deskpet starts.
+
+**Towns:** when three or more pets are friends (or a family), one of them founds a town.
+- The town gets a name, a mayor, a welcome sign and a flag, and claims a stretch of floor.
+- Residents then work through the town's to-do list together: a town hall, campfire, houses, a market, a well, a statue, a fort, plus anything someone invents.
+- Friends of residents move in.
+- Town land is kept free of everyone's personal builds.
+
+**Inventions:** every `every_minutes`, a pet invents something new:
+- a **building design**: a new structure generated from blocks, always physically sound. The inventor's town builds it next.
+- a **gadget**: a brand-new pixel-art item with its own sprite and name. Pets put them down, and some can be kicked around like toys.
+
+The LLM names inventions, babies and towns when it's running; otherwise pets pick from built-in names. Everything is under right-click → **inventions**, where you can build or place anything that's been invented, or ask a pet to *invent something now*. Right-click → **family & town** shows a pet's partner, kids, friends, rivals and town.
+
+```json
+"family": { "enabled": true, "max_pets": 12, "max_kids": 2, "baby_every_minutes": 15, "grow_up_minutes": 30 },
+"towns": { "enabled": true, "min_members": 3, "width": 620 },
+"inventions": { "enabled": true, "every_minutes": 10 }
+```
+
+Use `"every_minutes": 60` for one invention an hour.
+
 ## Climbing your windows
 
 On **sway** and **Hyprland**, deskpet reads where your windows are, so pets can:
@@ -123,6 +168,8 @@ On **sway** and **Hyprland**, deskpet reads where your windows are, so pets can:
 - walk along their tops;
 - ride along when you move one;
 - fall off when a window closes.
+
+On **[ttywm](https://github.com/rxvy-dev/ttywm)**, set `"windows_command": "ttywm windows-json"`.
 
 For any other compositor, set `"windows_command"` in the config to a command that prints the windows as JSON in screen coordinates:
 
