@@ -14,6 +14,9 @@ Little pets that live on your Wayland desktop. They:
 - have **moods**: happy, sad or angry, depending on what you say to them and how you treat them;
 - make **friends** (and enemies), become **partners** and have **babies** that grow up;
 - found **towns** together and build them up: a town hall, a market, houses, a well, a campfire, a statue...;
+- grow towns into **cities** with **skyscrapers** (each one taller than the last, up to 100 blocks), office towers and stairs;
+- run their towns: **democracy** with elections, **monarchy** with heirs, a **council**, or **anarchy**. Leaders wear crowns, issue decrees (festivals, building weeks, curfews) and can get overthrown;
+- go to (cartoon) **war** with towns they can't stand, raiding each other's buildings, then sign peace treaties;
 - **invent** new kinds of buildings and gadgets every 10 minutes (or every hour, you choose);
 - **talk** to you and to each other through a local LLM.
 
@@ -31,6 +34,8 @@ Built-in pets:
 | `crab` | wants to rewrite everything in Rust |
 | `floppy` | a grumpy 1.44 MB floppy disk grandpa |
 | `daemon` | a sneaky background process that lives in systemd |
+| `ferris` | Ferris the Rustacean, the Rust mascot (public domain / CC0, by Karen Rustad Tölva) |
+| `bot` | Bit, a tiny AI robot that runs locally on your GPU |
 
 You can also draw your own.
 
@@ -153,6 +158,38 @@ From that, pets become friends, best friends, rivals or enemies, and they know i
 
 The LLM names inventions, babies and towns when it's running; otherwise pets pick from built-in names. Everything is under right-click → **inventions**, where you can build or place anything that's been invented, or ask a pet to *invent something now*. Right-click → **family & town** shows a pet's partner, kids, friends, rivals and town.
 
+### Cities, governments and wars
+
+| a growing city | a war between two towns |
+|---|---|
+| ![a 10-floor skyscraper next to a town](docs/skyscraper.png) | ![soldiers with swords, a crowned chancellor and a half-built skyscraper](docs/war.png) |
+
+**Town sizes:** a town counts its finished buildings:
+- under 4 is a **village**;
+- 4 or more is a **town**;
+- 7 or more is a **city**.
+
+Cities start building **skyscrapers**, **office towers**, **tower blocks** and **stairs** (handy for pets that can't climb). Every new skyscraper tries to beat the city's tallest by 4-12 floors, up to `max_height_blocks` (100), or the height of your screen if that's smaller. At 24 px per block, a 1440p screen fits about 57 floors and 4K about 87. Use `--scale 2` for smaller pixels and taller cities.
+
+**Government:** each town gets one of these when it's founded.
+
+| government | how the leader is chosen |
+|---|---|
+| democracy | the town votes for a **mayor** every `election_minutes`, mostly for whoever they like most |
+| monarchy | the **monarch** (gold crown) passes the crown to a grown-up kid |
+| council | the **chancellor** is re-chosen by vote |
+| anarchy | no leader at all |
+
+- Leaders issue **decrees** every few minutes: a festival (everyone dances), a building week, a curfew (everyone to bed), a tag tournament. Residents mostly obey.
+- If the town hates its leader, there's a **revolution**: the leader is overthrown and the town becomes a democracy.
+
+**War:** when two towns really don't like each other, an unhappy leader may declare war. You can also declare it yourself from the family & town page.
+- Soldiers (shown with a crossed-swords mark) raid the enemy town and knock its buildings down. Defenders chase intruders out by flinging them away. It's all cartoon violence: nobody gets hurt, they just fly and complain.
+- Babies hide.
+- After `minutes`, the side with the higher score wins.
+- A **peace treaty** sign goes up, relations reset to neutral, and there's peace for `cooldown_minutes`.
+- *make peace* in the menu ends a war at once.
+
 ```json
 "family": { "enabled": true, "max_pets": 12, "max_kids": 2, "baby_every_minutes": 15, "grow_up_minutes": 30 },
 "towns": { "enabled": true, "min_members": 3, "width": 620 },
@@ -160,6 +197,12 @@ The LLM names inventions, babies and towns when it's running; otherwise pets pic
 ```
 
 Use `"every_minutes": 60` for one invention an hour.
+
+```json
+"government": { "election_minutes": 20, "decree_minutes": 6 },
+"war": { "enabled": true, "minutes": 3, "cooldown_minutes": 20 },
+"world": { "max_height_blocks": 100 }
+```
 
 ## Climbing your windows
 

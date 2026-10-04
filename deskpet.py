@@ -44,7 +44,7 @@ from gi.repository import Gdk, GdkPixbuf, GLib, Gtk  # noqa: E402
 
 import cairo  # noqa: E402
 
-VERSION = "4.0"
+VERSION = "5.0"
 HERE = os.path.dirname(os.path.realpath(__file__))
 XDG_DATA = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
 XDG_CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
@@ -350,6 +350,7 @@ DEFAULT_CONFIG = {
         "max_decor": 16,
         "max_props": 160,
         "smash": True,                # angry pets knock things over
+        "max_height_blocks": 100,     # nothing gets built taller than this (your screen may stop it sooner)
     },
     "family": {
         "enabled": True,              # close friends become partners and have babies
@@ -366,6 +367,15 @@ DEFAULT_CONFIG = {
     "inventions": {
         "enabled": True,              # pets invent new buildings and gadgets
         "every_minutes": 10,          # 10, 60, ...
+    },
+    "government": {
+        "election_minutes": 20,       # democracies vote this often
+        "decree_minutes": 6,          # leaders announce festivals, building weeks, curfews... (and wars)
+    },
+    "war": {
+        "enabled": True,              # towns that can't stand each other go to (cartoon) war
+        "minutes": 3,                 # how long a war lasts
+        "cooldown_minutes": 20,       # peace after a war
     },
     "climb_windows": True,            # climb + stand on your windows (sway, Hyprland, or windows_command)
     "windows_command": "",            # command printing JSON [{"x","y","w","h","title"}] (surface coords) for other WMs
@@ -940,7 +950,8 @@ BLUEPRINTS = {
     "pkgstack": ["..P", ".PP", "PPP"],
 }
 LEGEND = {"B": "brick", "C": "crate", "S": "stone", "W": "window", "D": "door", "L": "roof_l",
-          "M": "roof_m", "R": "roof_r", "F": "flag", "c": "campfire", "P": "pkg"}
+          "M": "roof_m", "R": "roof_r", "F": "flag", "c": "campfire", "P": "pkg",
+          "T": "steel", "G": "glass", "Y": "litglass", "A": "antenna"}
 FLOWERS = ("flower_red", "flower_yellow", "flower_blue")
 SHELTERS = ("house", "hut", "fort", "igloo", "crypt")
 
@@ -1222,7 +1233,28 @@ class World:
             self.app.dirty(prop_rect(prop))
             self.settle()
 
-    def new_project(self, kind, owner, site_x):
+    def max_height(self):
+        """height limit in blocks: the config cap (100), or less if the screen is shorter"""
+        cap = int(self.cfg.get("max_height_blocks", 100))
+        fits = int((self.app.h - 40) / self.block) - 1
+        return max(4, min(cap, fits))
+
+    def skyscraper_height(self, town_id=None):
+        """each new skyscraper tries to beat the tallest one so far"""
+        tallest = 0
+        for b in self.projects:
+            if b.kind.startswith("skyscraper") and b.kind[10:].isdigit() and (town_id is None or b.town == town_id):
+                tallest = max(tallest, int(b.kind[10:]))
+        return min(self.max_height(), max(10, tallest + random.randint(4, 12)))
+
+    def new_project(self, kind, owner, site_x, town_id=None):
+        if kind == "skyscraper":
+            kind = f"skyscraper{self.skyscraper_height(town_id)}"
+        if not ensure_blueprint(kind):
+            return None
+        rows = BLUEPRINTS[kind]
+        if len(rows) > self.max_height():   # anything else that's too tall gets its top cut off
+            BLUEPRINTS[kind] = rows = rows[len(rows) - self.max_height():]
         p = Project(self, kind, owner, site_x)
         if not p.cells:
             return None
@@ -1329,7 +1361,7 @@ class World:
         for b in data.get("buildings", []):
             try:
                 kind = b["kind"]
-                if kind not in BLUEPRINTS and not kind.startswith("inv"):
+                if not ensure_blueprint(kind) and not kind.startswith("inv"):
                     continue
                 proj = Project.__new__(Project)
                 proj.world, proj.kind, proj.id = self, kind, int(b["id"])
@@ -1587,7 +1619,9 @@ class Pet:
             if ty == "play":
                 return f"chasing the {self.app.kind_label(t['toy'].kind.name)} around"
             if ty == "smash":
-                return f"stomping over to smash {t['bld'].describe()}"
+                return ("raiding enemy territory to knock down " if t.get("war") else "stomping over to smash ") + t['bld'].describe()
+            if ty == "defend":
+                return f"chasing the invader {self.app.name_of(t['uid'])} out of town"
             if ty == "campfire":
                 return "sitting by the campfire" if st == "sit" else "walking to the campfire"
             if ty == "bed":
@@ -1846,6 +1880,9 @@ class Pet:
             return
         m = self.mood.dominant()
         night = app.env.night()
+        if self.baby and app.war_of(self.town):
+            self.start(self.pick([("bed", 50), ("follow", 50)]))   # little ones hide during wars
+            return
         if self.baby:
             # babies toddle after their parents, play and nap
             opts = [("walk", 18), ("idle", 8), ("sit", 6), ("follow", 45), ("dance", 8), ("hop", 10)]
@@ -1894,6 +1931,22 @@ class Pet:
             opts.append(("family", 12))
         if app.env.cpu > 85:
             opts.append(("hot", 10))
+        town = app.town_by_id(self.town)
+        if town and town.policy and app.now < town.policy_until:
+            # do what the leader says (mostly)
+            if town.policy == "festival":
+                opts += [("dance", 60), ("campfire", 20), ("hop", 15)]
+            elif town.policy == "build":
+                opts += [("town", 90)]
+            elif town.policy == "curfew":
+                opts = [("sleep", 80), ("bed", 60), ("idle", 5)]
+            elif town.policy == "tag":
+                opts += [("tag", 60)]
+        war = app.war_of(self.town)
+        if war:
+            enemy = app.town_by_id(war.enemy(self.town))
+            intruders = enemy and any(p.town == enemy.id and town.x0 <= p.cx <= town.x1 and not p.inside for p in app.pets)
+            opts = [("raid", 55), ("defend", 45 if intruders else 0), ("town", 8), ("fume", 6)]
         self.start(self.pick(opts))
 
     @staticmethod
@@ -1973,7 +2026,7 @@ class Pet:
                 town.agenda.append(kind)   # no room right now: stroll around town instead
                 self.task = {"type": "explore", "x": random.uniform(town.x0 + 20, town.x1 - 20), "t": app.now}
                 return
-            proj = app.world.new_project(kind, self, x)
+            proj = app.world.new_project(kind, self, x, town_id=town.id)
             if not proj:
                 self.start("walk")
                 return
@@ -1983,6 +2036,32 @@ class Pet:
             if not self.busy and random.random() < 0.6:
                 self.say_text(random.choice((f"{town.name} needs a {proj.label()}!", f"new project: {proj.label()}!",
                                              "everyone, grab some blocks!")), linger=3)
+        elif name == "raid":
+            war = app.war_of(self.town)
+            enemy = app.town_by_id(war.enemy(self.town)) if war else None
+            if not enemy:
+                self.start("walk")
+                return
+            targets = [b for b in app.world.projects if b.town == enemy.id and b.props]
+            if targets:
+                b = min(targets, key=lambda b: abs(b.center() - self.cx))
+                self.task = {"type": "smash", "bld": b, "t": app.now, "war": war}
+                if random.random() < 0.3 and not self.busy:
+                    self.say_text(random.choice((f"for {app.town_by_id(self.town).name}!", "CHARGE!", "attack!")), linger=2)
+            else:
+                self.task = {"type": "explore", "x": enemy.center(), "t": app.now}
+        elif name == "defend":
+            war = app.war_of(self.town)
+            town = app.town_by_id(self.town)
+            enemy_id = war.enemy(self.town) if war else None
+            foes = [p for p in app.pets if p.town == enemy_id and town and town.x0 <= p.cx <= town.x1 and not p.inside]
+            if foes:
+                foe = min(foes, key=lambda p: abs(p.cx - self.cx))
+                self.task = {"type": "defend", "uid": foe.uid, "t": app.now, "war": war}
+                if not self.busy and random.random() < 0.4:
+                    self.say_text(random.choice(("get out of our town!", "defend the town!", "not on my watch!")), linger=2)
+            else:
+                self.start("town")
         elif name == "follow":
             parents = [app.pet_by_uid(u) for u in self.parents]
             parents = [p for p in parents if p and not p.inside]
@@ -2538,15 +2617,18 @@ class Pet:
                     p.knock(self.dir * random.uniform(150, 500), -random.uniform(250, 650))
                 world.settle()
                 self.stats["smashed"] += 1
-                self.mood.add("angry", -35)
+                war = t.get("war")
+                if war and not war.over:
+                    war.score[self.town] = war.score.get(self.town, 0) + len(set(victims))
+                self.mood.add("angry", -15 if war else -35)
                 self.say_text(random.choice(("HA!", "take THAT!", "smash!!", "that's what you get!")), linger=2.5)
                 self.remember(f"smashed {b.describe()}")
                 owner = next((p for p in app.pets if p.uid == b.owner and p is not self), None)
                 if owner:
                     owner.mood.add("sad", 30)
                     owner.mood.add("angry", 20)
-                    owner.remember(f"{self.name} smashed my {b.kind}")
-                    app.bond(self, owner, -30)
+                    owner.remember(f"{self.name} smashed my {b.label()}")
+                    app.bond(self, owner, -6 if war else -30)
                     if not owner.busy:
                         owner.say_text(random.choice(("MY " + b.kind.upper() + "!!", "noooo", "why would you do that?!")), linger=3)
                 self.set_state("kick", 0.6)
@@ -2593,6 +2675,31 @@ class Pet:
                 self.remember(f"went to sleep inside {b.describe()}")
                 if self.extra_drawn:
                     app.dirty(self.extra_drawn[0])
+            return
+
+        if ty == "defend":
+            foe = app.pet_by_uid(t["uid"])
+            war = t.get("war")
+            if foe is None or foe.inside or not war or war.over:
+                self.end_task()
+                return
+            if self.state != "stomp":
+                self.set_state("stomp", 999)
+            close = abs(foe.cx - self.cx) < (f.w + foe.frame().w) / 2 and abs(foe.bottom - self.bottom) < 40
+            if close and foe.state not in ("fall", "jump", "held"):
+                self.dir = 1 if foe.cx > self.cx else -1
+                if foe.convo:
+                    foe.convo.cancel()
+                foe.end_task()
+                foe.vx, foe.vy = self.dir * 520, -420
+                foe.set_state("fall")
+                foe.say_text(random.choice(("oof!", "retreat!", "ow ow ow")), linger=1.5)
+                war.score[self.town] = war.score.get(self.town, 0) + 2
+                self.set_state("kick", 0.5)
+                self.end_task()
+                return
+            if self.go_to(foe.cx, dt, self.speed() * 1.4) == "blocked":
+                self.end_task()
             return
 
         if ty == "follow":
@@ -2747,7 +2854,7 @@ TOWN_NAMES = ["Penguinville", "Byteburg", "/usr/local", "Tuxford", "Kernelton", 
               "Daemon Falls", "Swapston", "Init City", "Cronberg", "Bashwick", "Pipe Valley", "Fork Town"]
 BABY_NAMES = ["Pixel", "Byte", "Bit", "Nibble", "Chip", "Cache", "Patch", "Fork", "Sudo", "Tiny", "Bloop", "Glitch",
               "Ping", "Echo", "Null", "Tux Jr.", "Kitty", "Pebble", "Zip", "Beep"]
-TOWN_AGENDA = ["townhall", "campfire", "house", "market", "well", "hut", "tower", "garden", "house", "statue", "fort"]
+TOWN_AGENDA = ["townhall", "campfire", "house", "market", "well", "hut", "stairs", "tower", "garden", "house", "statue", "fort"]
 INV_ADJ = ["Quantum", "Turbo", "Tiny", "Glorious", "Sudo", "Cozy", "Blazing", "Recursive", "Pixel", "Kernel",
            "Midnight", "Rusty", "Floppy", "Async", "Mega", "Wobbly", "Legendary", "Portable"]
 INV_BUILD = ["Tower", "Hall", "Hut", "Keep", "Palace", "Shack", "Temple", "Lab", "Den", "Fortress", "Spire", "Bunker"]
@@ -2760,29 +2867,90 @@ BLUEPRINTS.update({
     "market": ["LMMR", "CPPC"],
     "well": ["S.S", "SSS"],
     "statue": ["F", "S", "S", "SSS"],
+    "stairs": ["...S", "..SS", ".SSS", "SSSS"],
+    # cities
+    "office": ["A...", "TGGT", "TYGT", "TGYT", "TGGT", "TGDT"],
+    "skyscraper": ["..A..", ".TGT.", ".TYT.", ".TGT.", ".TYT.", ".TGT.", "TGYGT", "TGGGT", "TYGYT", "TGGGT", "TGDGT"],
+    "tower block": ["A..", "TYT", "TGT", "TYT", "TGT", "TYT", "TGT", "TDT"],
 })
+CITY_BUILDS = ["skyscraper", "office", "stairs", "tower block", "skyscraper", "statue"]
+
+
+def make_skyscraper(h):
+    """a skyscraper h blocks tall: wide glass base, slimmer upper floors, antenna on top"""
+    h = max(6, int(h))
+    rng = random.Random(h)  # same height -> same look (so saved ones rebuild identically)
+    rows = ["TGDGT"]
+    base = max(3, int(h * 0.6))
+    for _ in range(1, base):
+        rows.append(rng.choice(["TGGGT", "TGYGT", "TYGYT", "TGGYT", "TYGGT"]))
+    for _ in range(base, h - 1):
+        rows.append(rng.choice([".TGT.", ".TYT.", ".TGT."]))
+    rows.append("..A..")
+    return list(reversed(rows))
+
+
+def ensure_blueprint(kind):
+    """sized skyscrapers ("skyscraper37") are generated on demand"""
+    if kind not in BLUEPRINTS and kind.startswith("skyscraper") and kind[10:].isdigit():
+        BLUEPRINTS[kind] = make_skyscraper(int(kind[10:]))
+    return kind in BLUEPRINTS
+GOVERNMENTS = [("democracy", 40), ("monarchy", 30), ("council", 20), ("anarchy", 10)]
+GOV_TITLE = {"democracy": "mayor", "monarchy": "monarch", "council": "chancellor", "anarchy": None}
+DECREES = {
+    "festival": ["festival day! everybody dance!", "by royal decree: PARTY!", "today we celebrate!"],
+    "build": ["back to work! the town needs more buildings!", "construction week starts now!", "build, build, build!"],
+    "curfew": ["curfew! everyone to bed!", "lights out, citizens.", "naptime is now the law."],
+    "tag": ["official tag tournament!", "everyone play tag, that's an order!"],
+}
 
 
 class Town:
     def __init__(self, tid, name, x0, x1, mayor, members):
         self.id, self.name, self.x0, self.x1 = tid, name, x0, x1
-        self.mayor = mayor
+        self.mayor = mayor          # the leader (mayor / monarch / chancellor)
         self.members = list(members)
         self.agenda = list(TOWN_AGENDA)
         self.founded = time.time()
+        names, weights = zip(*GOVERNMENTS)
+        self.gov = random.choices(names, weights)[0]
+        self.next_election = 0.0    # app.now
+        self.next_decree = 0.0
+        self.policy = None
+        self.policy_until = 0.0
+        self.level = "village"
+
+    @property
+    def title(self):
+        return GOV_TITLE.get(self.gov)
 
     def center(self):
         return (self.x0 + self.x1) / 2
 
     def next_kind(self, app):
         if not self.agenda:
-            pool = [k for k in BLUEPRINTS if k not in ("pkgstack",)] + list(app.invented_bp)
+            pool = ["house", "hut", "tower", "garden", "well", "market", "campfire", "statue", "fort"]
+            if self.level == "city":
+                pool += CITY_BUILDS * 2
+            pool += list(app.invented_bp)
             self.agenda = random.sample(pool, min(5, len(pool)))
         return self.agenda.pop(0)
 
     def snapshot(self):
         return {"id": self.id, "name": self.name, "x0": self.x0, "x1": self.x1, "mayor": self.mayor,
-                "members": self.members, "agenda": self.agenda, "founded": self.founded}
+                "members": self.members, "agenda": self.agenda, "founded": self.founded, "gov": self.gov,
+                "level": self.level}
+
+
+class War:
+    def __init__(self, a, b, now, minutes):
+        self.a, self.b = a, b
+        self.start, self.end = now, now + max(0.2, minutes) * 60
+        self.score = {a: 0, b: 0}
+        self.over = False
+
+    def enemy(self, tid):
+        return self.b if tid == self.a else self.a if tid == self.b else None
 
 
 def gen_blueprint():
@@ -3092,7 +3260,7 @@ class Menu:
         elif page == "build":
             it.append(("build...", None))
             for k in BLUEPRINTS:
-                if not k.startswith("inv"):
+                if not k.startswith("inv") and not (k.startswith("skyscraper") and k[10:].isdigit()):
                     it.append((f"    {k}", ("act", f"build:{k}")))
             for k in list(app.invented_bp)[-4:]:
                 it.append((f"    {app.kind_label(k)[:22]}", ("act", f"build:{k}")))
@@ -3140,10 +3308,23 @@ class Menu:
             town = app.town_by_id(pet.town)
             info.append(f"  town: {town.name}" if town else "  town: none yet")
             if town:
-                info.append(f"  mayor: {app.name_of(town.mayor)}")
+                info.append(f"  {town.level}, {town.gov}")
+                if town.title:
+                    info.append(f"  {town.title}: {app.name_of(town.mayor)}")
                 info.append(f"  residents: {len(town.members)}")
-            for line in info[:12]:
+                war = app.war_of(town.id)
+                if war:
+                    enemy = app.town_by_id(war.enemy(town.id))
+                    info.append(f"  AT WAR: {enemy.name if enemy else '?'}")
+                    info.append(f"  score {war.score[town.id]}-{war.score[war.enemy(town.id)]}")
+            for line in info[:13]:
                 it.append((line[:28], None))
+            if town and app.war_of(town.id):
+                it.append(("    make peace", ("peace",)))
+            elif town and app.config["war"].get("enabled", True):
+                for o in app.towns:
+                    if o is not town and not app.war_of(o.id):
+                        it.append((f"    declare war: {o.name[:12]}", ("war", o.id)))
             it.append(("    < back", ("page", "main")))
         elif page == "inventions":
             it.append(("inventions...", None))
@@ -3160,6 +3341,8 @@ class Menu:
             it.append(("    throw a ball", ("ball",)))
             it.append(("    clean up rubble", ("clean",)))
             it.append(("    clear everything built", ("clearall",)))
+            if app.wars:
+                it.append(("    make peace everywhere", ("peaceall",)))
             it.append(("    < back", ("page", "main")))
         self.h = len(self.items) * ROW_H + 10
         self.x = int(min(max(4, x), app.w - MENU_W - 4))
@@ -3237,6 +3420,8 @@ ICON_HEART = [".X.X.", "XXXXX", ".XXX.", "..X.."]
 ICON_BANG = ["X", "X", "X", ".", "X"]
 ICON_DROP = [".X.", "XXX", "XXX", ".X."]
 ICON_NOTE = ["..XX", "..X.", "..X.", "XXX.", "XX.."]
+ICON_CROWN = ["X.X.X", "XXXXX", "XXXXX"]
+ICON_SWORDS = ["X...X", ".X.X.", "..X..", ".X.X.", "X...X"]
 
 
 def draw_icon(cr, icon, x, y, px, rgba):
@@ -3278,6 +3463,7 @@ class App:
         self.social = {}          # "uidA|uidB" -> -100..100
         self.residents = []       # pets born here (respawned on start)
         self.towns = []
+        self.wars = []
         self.inventions = []
         self.invented_bp = {}
         self.invented_items = {}
@@ -3569,14 +3755,28 @@ class App:
                 out.append(f"Your {r}{'s' if len(groups[r]) > 1 else ''}: {', '.join(groups[r])}.")
         town = self.town_by_id(pet.town)
         if town:
-            out.append(f"You live in the town of {town.name} (mayor: {self.name_of(town.mayor)}, "
-                       f"{len(town.members)} residents).")
+            out.append(f"You live in the {town.level} of {town.name}, a {town.gov} with {len(town.members)} residents.")
+            if town.mayor == pet.uid and town.title:
+                out.append(f"YOU are the {town.title} of {town.name}: act like a leader.")
+            elif town.title and town.mayor:
+                out.append(f"Its {town.title} is {self.name_of(town.mayor)}.")
+            else:
+                out.append("It has no leader (anarchy).")
+            if town.policy and self.now < town.policy_until:
+                out.append(f"Current decree: {town.policy}.")
+            war = self.war_of(town.id)
+            if war:
+                enemy = self.town_by_id(war.enemy(town.id))
+                out.append(f"{town.name} is AT WAR with {enemy.name if enemy else 'a rival town'} "
+                           f"(score {war.score[town.id]} to {war.score[war.enemy(town.id)]})!")
         if self.inventions:
             out.append("Recent inventions: " + ", ".join(f"the {r['name']} (by {r['by_name']})"
                                                          for r in self.inventions[-3:]) + ".")
         return " ".join(out)
 
     def kind_label(self, kind):
+        if kind.startswith("skyscraper") and kind[10:].isdigit():
+            return f"{kind[10:]}-floor skyscraper"
         if kind in self.invented_bp:
             return self.invented_bp[kind]["name"]
         if kind in self.invented_items:
@@ -3624,6 +3824,8 @@ class App:
                     break
         if self.config["towns"].get("enabled", True):
             self.town_tick()
+            self.gov_tick()
+            self.war_tick()
 
     def make_partners(self, a, b):
         a.partner, b.partner = b.uid, a.uid
@@ -3732,14 +3934,20 @@ class App:
         name = random.choice([n for n in TOWN_NAMES if n not in used] or TOWN_NAMES)
         mayor = max((p for p in members if not p.baby), key=lambda p: (p.stats.get("built", 0), random.random()))
         town = Town(tid, name, x0, x0 + width, mayor.uid, [p.uid for p in members])
+        gcfg = self.config["government"]
+        town.next_election = self.now + float(gcfg.get("election_minutes", 20)) * 60
+        town.next_decree = self.now + random.uniform(60, float(gcfg.get("decree_minutes", 6)) * 60)
+        if town.gov == "anarchy":
+            town.mayor = None
         self.towns.append(town)
         for p in members:
             p.town = tid
             p.mood.add("happy", 20)
             p.remember(f"founded the town of {name} with {', '.join(m.name for m in members if m is not p)}")
         if not mayor.busy:
-            mayor.say_text(random.choice((f"let's start a town! welcome to {name}!", f"i hereby found... {name}!",
-                                          f"{name}: population {len(members)}!")), linger=5)
+            role = f" i'll be your {town.title}!" if town.title else " no rulers, no rules!"
+            mayor.say_text(random.choice((f"welcome to {name}!", f"i hereby found... {name}!",
+                                          f"{name}: population {len(members)}!")) + role, linger=5)
         sign = self.world.decor("sign", x0 + 24, f"town:{tid}", text=name)
         self.world.decor("flag", x0 + 60, f"town:{tid}")
 
@@ -3847,10 +4055,199 @@ class App:
                 town = Town(int(t["id"]), str(t["name"]), x0, x1, t.get("mayor"), t.get("members", []))
                 town.agenda = [k for k in t.get("agenda", []) if k in BLUEPRINTS] or town.agenda
                 town.founded = float(t.get("founded", time.time()))
+                if t.get("gov") in GOV_TITLE:
+                    town.gov = t["gov"]
+                if t.get("level") in ("village", "town", "city"):
+                    town.level = t["level"]
+                town.next_election = float(self.config["government"].get("election_minutes", 20)) * 60
+                town.next_decree = random.uniform(60, 240)
                 self.towns.append(town)
             except (KeyError, TypeError, ValueError):
                 continue
         self.residents = [str(u) for u in d.get("residents", []) if isinstance(u, str)]
+
+    # -- government + war
+    def war_of(self, tid):
+        return next((w for w in self.wars if not w.over and tid in (w.a, w.b)), None) if tid is not None else None
+
+    def set_leader(self, t, pet, why=""):
+        t.mayor = pet.uid if pet else None
+        if not pet or not t.title:
+            return
+        pet.mood.add("happy", 20)
+        pet.remember(f"became the {t.title} of {t.name}" + (f" ({why})" if why else ""))
+        for m in self.pets:
+            if m.town == t.id and m is not pet:
+                m.remember(f"{pet.name} became the {t.title} of {t.name}")
+
+    def gov_tick(self):
+        gcfg = self.config["government"]
+        for t in self.towns:
+            members = [p for p in self.pets if p.town == t.id]
+            adults = [p for p in members if not p.baby]
+            if not adults:
+                continue
+            done = [b for b in self.world.projects if b.town == t.id and b.done and not b.smashed]
+            lvl = "city" if len(done) >= 7 else "town" if len(done) >= 4 else "village"
+            if lvl != t.level:
+                grew = ["village", "town", "city"].index(lvl) > ["village", "town", "city"].index(t.level)
+                t.level = lvl
+                if grew:
+                    if lvl == "city":
+                        t.agenda[:0] = ["skyscraper", "stairs", "office"]
+                    speaker = self.pet_by_uid(t.mayor) or random.choice(adults)
+                    if not speaker.busy:
+                        speaker.say_text(f"{t.name} is now a {lvl}!" + (" time for skyscrapers!" if lvl == "city" else ""), linger=4)
+                    for m in members:
+                        m.mood.add("happy", 15)
+                        m.remember(f"{t.name} grew into a {lvl}")
+            if t.gov == "anarchy":
+                t.mayor = None
+                continue
+            leader = self.pet_by_uid(t.mayor)
+            if leader is None or leader.baby or leader.town != t.id:
+                # succession: monarchs pass the crown to a grown-up kid, everyone else picks the most liked
+                heir = None
+                if t.gov == "monarchy" and t.mayor:
+                    old_kids = self.store.data.get("pets", {}).get(t.mayor, {}).get("kids", [])
+                    heir = next((p for p in adults if p.uid in old_kids), None)
+                heir = heir or max(adults, key=lambda c: sum(self.aff(c, o) for o in adults) + random.random())
+                self.set_leader(t, heir, "succession")
+                if not heir.busy:
+                    heir.say_text(f"long live the new {t.title}... me!" if t.gov == "monarchy" else f"i'll lead {t.name} now.", linger=4)
+                continue
+            if len(adults) >= 3:
+                others = [o for o in adults if o is not leader]
+                approval = sum(self.aff(o, leader) for o in others) / len(others)
+                if approval < -20:
+                    new = max(others, key=lambda c: sum(self.aff(c, o) for o in adults) + random.random())
+                    t.gov = "democracy"
+                    t.next_election = self.now + float(gcfg.get("election_minutes", 20)) * 60
+                    self.set_leader(t, new, "revolution")
+                    leader.mood.add("sad", 40)
+                    leader.remember(f"was overthrown in {t.name}")
+                    if not new.busy:
+                        new.say_text(f"REVOLUTION! down with {leader.name}!", linger=4)
+                    continue
+            if t.gov in ("democracy", "council") and self.now >= t.next_election and len(adults) >= 2:
+                self.election(t, adults)
+            elif self.now >= t.next_decree:
+                self.decree(t, leader)
+            if t.policy and self.now > t.policy_until:
+                t.policy = None
+
+    def election(self, t, adults):
+        t.next_election = self.now + float(self.config["government"].get("election_minutes", 20)) * 60
+        votes = {c.uid: 0 for c in adults}
+        for voter in adults:
+            pick = max(adults, key=lambda c: self.aff(voter, c) + (12 if c is voter else 0) + (4 if c.uid == t.mayor else 0)
+                       + c.stats.get("built", 0) * 0.5 + random.uniform(0, 10))
+            votes[pick.uid] += 1
+        top = max(votes.values())
+        winner = self.pet_by_uid(random.choice([u for u, v in votes.items() if v == top]))
+        again = winner.uid == t.mayor
+        self.set_leader(t, winner, "election")
+        if not winner.busy:
+            word = "re-elected" if again else "elected"
+            winner.say_text(f"i've been {word} {t.title} of {t.name}! ({top} vote{'s' if top != 1 else ''})", linger=4)
+        for p in adults:
+            if p is not winner and votes.get(p.uid) and not again:
+                p.mood.add("sad", 10)
+
+    def decree(self, t, leader):
+        gcfg, wcfg = self.config["government"], self.config["war"]
+        t.next_decree = self.now + float(gcfg.get("decree_minutes", 6)) * 60 * random.uniform(0.7, 1.3)
+        opts = [("festival", 30), ("build", 35), ("curfew", 40 if self.env.night() else 8), ("tag", 15)]
+        rivals = []
+        if wcfg.get("enabled", True) and not self.war_of(t.id):
+            for o in self.towns:
+                if o is t or self.war_of(o.id) or self.now < getattr(o, "peace_until", 0) or self.now < getattr(t, "peace_until", 0):
+                    continue
+                if self.tension(t, o) < 5:
+                    rivals.append(o)
+            if rivals and leader.mood.dominant() != "happy":
+                opts.append(("war", 25 if leader.mood.dominant() == "angry" else 10))
+        kind = Pet.pick(opts)
+        if kind == "war":
+            self.declare_war(t, min(rivals, key=lambda o: self.tension(t, o)))
+            return
+        t.policy, t.policy_until = kind, self.now + 120
+        if not leader.busy:
+            leader.say_text(random.choice(DECREES[kind]), linger=4)
+        for m in self.pets:
+            if m.town == t.id:
+                m.remember(f"the {t.title} {leader.name} declared: {kind}")
+
+    def tension(self, t, o):
+        a = [p for p in self.pets if p.town == t.id]
+        b = [p for p in self.pets if p.town == o.id]
+        if not a or not b:
+            return 0.0
+        return sum(self.aff(x, y) for x in a for y in b) / (len(a) * len(b))
+
+    def declare_war(self, t, o):
+        if self.war_of(t.id) or self.war_of(o.id) or not self.config["war"].get("enabled", True):
+            return None
+        w = War(t.id, o.id, self.now, float(self.config["war"].get("minutes", 3)))
+        self.wars.append(w)
+        lead, other = self.pet_by_uid(t.mayor), self.pet_by_uid(o.mayor)
+        speaker = lead or next((p for p in self.pets if p.town == t.id), None)
+        if speaker and not speaker.busy:
+            speaker.say_text(f"{t.name} DECLARES WAR ON {o.name.upper()}!", linger=5)
+        if other and not other.busy:
+            GLib.timeout_add(1800, lambda: (not other.busy and other.say_text(random.choice(
+                ("how dare you!", "to arms!", "you'll regret this!")), linger=3), False)[1])
+        for p in self.pets:
+            if p.town in (t.id, o.id):
+                p.mood.add("angry", 15)
+                p.remember(f"war broke out between {t.name} and {o.name}")
+                if p.task and p.task["type"] == "build":
+                    p.end_task()
+        return w
+
+    def end_war(self, w, forced=False):
+        if w.over:
+            return
+        w.over = True
+        a, b = self.town_by_id(w.a), self.town_by_id(w.b)
+        if not a or not b:
+            return
+        sa, sb = w.score[w.a], w.score[w.b]
+        winner = None if (forced or sa == sb) else (a if sa > sb else b)
+        loser = None if winner is None else (b if winner is a else a)
+        for t in (a, b):
+            t.peace_until = self.now + float(self.config["war"].get("cooldown_minutes", 20)) * 60
+        for x in self.pets:
+            for y in self.pets:
+                if x.town == a.id and y.town == b.id:
+                    k = "|".join(sorted((x.uid, y.uid)))
+                    self.social[k] = max(self.social.get(k, 0.0), -5.0) + 5
+        for p in self.pets:
+            if p.town not in (a.id, b.id):
+                continue
+            mine = self.town_by_id(p.town)
+            if winner is None:
+                p.remember(f"the war between {a.name} and {b.name} ended in a truce")
+                p.mood.add("happy", 10)
+            elif mine is winner:
+                p.remember(f"{winner.name} won the war against {loser.name}")
+                p.mood.add("happy", 30)
+            else:
+                p.remember(f"{loser.name} lost the war against {winner.name}")
+                p.mood.add("sad", 30)
+        speaker = self.pet_by_uid((winner or a).mayor) or next((p for p in self.pets if p.town == (winner or a).id), None)
+        if speaker and not speaker.busy:
+            speaker.say_text(f"VICTORY FOR {winner.name.upper()}!" if winner else "peace at last. let's rebuild.", linger=5)
+        mid = (a.center() + b.center()) / 2
+        self.world.decor("sign", mid, "town:treaty", text="peace treaty")
+        self.wars = [x for x in self.wars if not x.over]
+
+    def war_tick(self):
+        for w in list(self.wars):
+            a = [p for p in self.pets if p.town == w.a]
+            b = [p for p in self.pets if p.town == w.b]
+            if self.now >= w.end or not a or not b:
+                self.end_war(w)
 
     # -- chatting with you
     def open_chat(self, pet):
@@ -4248,6 +4645,14 @@ class App:
             self.free(pet)
             if not pet.do_action(action[1]):
                 pet.say_text(random.choice(("can't right now", "no room for that", "hmm, nope")), linger=2)
+        elif kind == "peace":
+            w = self.war_of(pet.town)
+            if w:
+                self.end_war(w, forced=True)
+        elif kind == "war":
+            t, o = self.town_by_id(pet.town), self.town_by_id(action[1])
+            if t and o:
+                self.declare_war(t, o)
         elif kind == "invent":
             if pet.baby:
                 pet.say_text("i'm too little to invent stuff!", linger=2.5)
@@ -4285,6 +4690,9 @@ class App:
                 b.y = 0
                 b.loose, b.resting = True, False
                 b.vx = random.uniform(-300, 300)
+        elif kind == "peaceall":
+            for w in list(self.wars):
+                self.end_war(w, forced=True)
         elif kind == "clean":
             for p in [p for p in self.world.props if p.loose and p.building is None and p.kind.solid]:
                 self.world.remove(p)
@@ -4413,6 +4821,9 @@ class App:
     def draw_pet_extras(self, cr, pet, f, x, y):
         s = pet.pack.scale
         t = self.now
+        town = self.town_by_id(pet.town)
+        if town and self.war_of(town.id) and not pet.baby:
+            draw_icon(cr, ICON_SWORDS, x - s, y + 2 * s, max(1, s - 1), (0.85, 0.85, 0.95, 0.9))
         m = pet.mood.dominant()
         lv = pet.mood.level()
         if pet.carrying:
@@ -4421,6 +4832,11 @@ class App:
             cr.get_source().set_filter(cairo.FILTER_NEAREST)
             cr.paint()
             y -= kd.h - 2 * s
+        if town and town.mayor == pet.uid and town.title:
+            gold = town.gov == "monarchy"
+            draw_icon(cr, ICON_CROWN, int(pet.cx - 2.5 * s), y - 4 * s, s,
+                      (1, 0.82, 0.2, 1) if gold else (0.8, 0.82, 0.9, 1))
+            y -= 4 * s
         if pet.state == "held" and t < pet.alert_until:
             draw_icon(cr, ICON_BANG, int(pet.cx - s / 2), y - 7 * s, s, (1, 0.85, 0.2, 1))
         elif m == "angry":
@@ -4475,7 +4891,7 @@ class App:
                 r.translate(x, y)
                 region.union(r)
             for p in self.world.props:
-                if p.kind.round:
+                if p.kind.round or (p.kind.solid and p.kind.build):
                     region.union(cairo.RectangleInt(int(p.x), int(p.y), p.w, p.h))
                 else:
                     r = p.frame().region.copy()

@@ -730,6 +730,187 @@ def daemon_pack():
     }
 
 
+# ------------------------------------------------------------------ Ferris the Rustacean (CC0, rustacean.net)
+
+FE = (247, 76, 0, 255)
+FE_D = (190, 52, 0, 255)
+FE_L = (255, 140, 74, 255)
+FE_EYE = (24, 18, 20, 255)
+
+
+def ferris(bob=0, legs=0, claws="up", eye="open", z=None, love=False, mouth=False, low=False):
+    img, d = canvas()
+    top = 13 + bob + (4 if low else 0)
+    bottom = top + 13
+    # claws
+    def claw(cx, cy, right):
+        d.ellipse([cx - 3, cy - 3, cx + 3, cy + 3], fill=FE)
+        d.polygon([(cx - 1, cy - 3), (cx + 1, cy - 3), (cx + (2 if right else -2), cy)], fill=(0, 0, 0, 0))
+        d.point((cx + (-1 if right else 1), cy + 1), fill=FE_L)
+    if claws == "up":
+        d.line([(7, top + 6), (4, top - 1)], fill=FE, width=2)
+        d.line([(24, top + 6), (27, top - 1)], fill=FE, width=2)
+        claw(3, top - 4, False)
+        claw(28, top - 4, True)
+    elif claws == "down":
+        d.line([(6, top + 7), (3, top + 4)], fill=FE, width=2)
+        d.line([(25, top + 7), (28, top + 4)], fill=FE, width=2)
+        claw(3, top + 1, False)
+        claw(28, top + 1, True)
+    elif claws in ("wave", "wave2"):
+        d.line([(6, top + 7), (3, top + 4)], fill=FE, width=2)
+        claw(3, top + 1, False)
+        tip = (29, top - 6) if claws == "wave" else (30, top - 1)
+        d.line([(24, top + 6), (tip[0] - 1, tip[1] + 3)], fill=FE, width=2)
+        claw(tip[0], tip[1], True)
+    # body: a wide dome, darker underneath
+    d.ellipse([5, top, 26, bottom + 4], fill=FE)
+    img2 = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    img2.paste(img.crop((0, 0, W, bottom + 1)), (0, 0))
+    img, d = img2, ImageDraw.Draw(img2)
+    d.line([(7, bottom), (24, bottom)], fill=FE_D)
+    d.line([(6, bottom - 1), (25, bottom - 1)], fill=FE_D)
+    # little legs, three each side, poking out under the shell
+    if not low:
+        for i, x in enumerate((7, 10, 13)):
+            off = (i + legs) % 2
+            d.line([(x + 1, bottom), (x - 1, 30 - off)], fill=FE_D)
+            d.line([(30 - x, bottom), (32 - x, 30 - off)], fill=FE_D)
+    d.ellipse([9, top + 1, 13, top + 3], fill=FE_L)
+    # eyes on little stalks: glossy black ovals with a shine
+    sy = top - (1 if low else 3)
+    for ex in (11, 19):
+        d.line([(ex + 1, top + 1), (ex + 1, sy + 3)], fill=FE_D)
+        if eye in ("open", "wide", "angry", "sad"):
+            d.ellipse([ex - 1, sy - 2 - (1 if eye == "wide" else 0), ex + 3, sy + 3], fill=FE_EYE)
+            d.point((ex, sy - 1), fill=WHITE)
+        elif eye == "closed":
+            d.line([(ex - 1, sy + 2), (ex + 3, sy + 2)], fill=FE_EYE)
+        elif eye == "happy":
+            d.point([(ex - 1, sy + 2), (ex, sy + 1), (ex + 1, sy), (ex + 2, sy + 1), (ex + 3, sy + 2)], fill=FE_EYE)
+    if eye == "angry":
+        d.line([(9, sy - 4), (14, sy - 2)], fill=FE_D)
+        d.line([(17, sy - 2), (22, sy - 4)], fill=FE_D)
+    elif eye == "sad":
+        d.line([(9, sy - 2), (14, sy - 4)], fill=FE_D)
+        d.line([(17, sy - 4), (22, sy - 2)], fill=FE_D)
+        tear(d, 10, sy + 4)
+    # the smile
+    my = top + 6
+    if mouth:
+        d.ellipse([13, my, 18, my + 3], fill=MOUTH)
+    elif eye == "sad":
+        d.point([(13, my + 2), (14, my + 1), (15, my + 1), (16, my + 1), (17, my + 2)], fill=FE_EYE)
+    elif eye != "angry":
+        d.point([(12, my), (13, my + 1), (14, my + 2), (15, my + 2), (16, my + 2), (17, my + 1), (18, my)], fill=FE_EYE)
+    else:
+        d.line([(13, my + 1), (18, my + 1)], fill=FE_EYE)
+    return finish(img, d, z, love)
+
+
+def ferris_pack():
+    return {
+        "idle": [ferris(0), ferris(0, 1), ferris(1), ferris(1, eye="closed")],
+        "walk": [ferris(0, 0), ferris(1, 1), ferris(0, 0, "down"), ferris(1, 1)],
+        "held": [ferris(0, 0, "up", "wide"), ferris(0, 1, "up", "wide")],
+        "fall": [ferris(0, 0, "up", "wide"), ferris(0, 1, "down", "wide")],
+        "land": [ferris(0, claws="down", eye="closed", low=True)],
+        "sleep": [ferris(0, claws="down", eye="closed", z=0, low=True), ferris(1, claws="down", eye="closed", z=1, low=True)],
+        "sit": [ferris(0, claws="down", low=True)],
+        "wave": [ferris(0, claws="wave", eye="happy"), ferris(0, claws="wave2", eye="happy")],
+        "happy": [ferris(0, claws="up", eye="happy", love=True), ferris(-2, 1, "up", "happy", love=True)],
+        "climb": [ferris(0, 0, "up"), ferris(0, 1, "wave")],
+        "talk": [ferris(0, mouth=True), ferris(0, 1), ferris(0, claws="wave", mouth=True), ferris(0)],
+        "angry": [ferris(0, 0, "up", "angry"), ferris(1, 1, "wave", "angry")],
+        "sad": [ferris(0, claws="down", eye="sad", low=True), ferris(1, claws="down", eye="sad", low=True)],
+    }
+
+
+# ------------------------------------------------------------------ Bit: an original little local-AI robot
+
+BOT = (150, 170, 196, 255)
+BOT_D = (96, 112, 140, 255)
+SCREEN = (16, 30, 26, 255)
+GLOW = (90, 240, 150, 255)
+
+
+def bot(bob=0, legs=(0, 0), arms="down", eye="open", z=None, love=False, mouth=False, sit=False, blink=0):
+    img, d = canvas()
+    top = 7 + bob + (3 if sit else 0)
+    # antenna
+    d.line([(16, top - 4), (16, top)], fill=BOT_D)
+    d.rectangle([15, top - 6, 17, top - 4], fill=(240, 80, 80, 255) if blink == 0 else (255, 200, 200, 255))
+    # arms
+    ay = top + 12
+    if arms == "down":
+        d.line([(7, ay), (4, ay + 5)], fill=BOT_D, width=2)
+        d.line([(24, ay), (27, ay + 5)], fill=BOT_D, width=2)
+    elif arms == "up":
+        d.line([(7, ay - 1), (3, ay - 8)], fill=BOT_D, width=2)
+        d.line([(24, ay - 1), (28, ay - 8)], fill=BOT_D, width=2)
+    elif arms == "out":
+        d.line([(7, ay), (1, ay - 1)], fill=BOT_D, width=2)
+        d.line([(24, ay), (30, ay - 1)], fill=BOT_D, width=2)
+    elif arms in ("wave", "wave2"):
+        d.line([(7, ay), (4, ay + 5)], fill=BOT_D, width=2)
+        d.line([(24, ay - 1), (29, ay - 7) if arms == "wave" else (30, ay - 3)], fill=BOT_D, width=2)
+    elif arms in ("climb1", "climb2"):
+        a = 0 if arms == "climb1" else 4
+        d.line([(24, ay - 1), (28, ay - 9 + a)], fill=BOT_D, width=2)
+        d.line([(7, ay - 1), (11, ay - 5 - a)], fill=BOT_D, width=2)
+    # head/body: one rounded box with a screen face
+    d.rounded_rectangle([7, top, 24, top + 17], radius=3, fill=BOT)
+    d.rectangle([8, top + 15, 23, top + 16], fill=BOT_D)
+    d.rounded_rectangle([9, top + 2, 22, top + 11], radius=2, fill=SCREEN)
+    ey = top + 5
+    for ex in (12, 18):
+        if eye in ("open", "angry", "sad"):
+            d.rectangle([ex, ey, ex + 1, ey + 2], fill=GLOW)
+        elif eye == "wide":
+            d.rectangle([ex - 1, ey - 1, ex + 2, ey + 2], fill=GLOW)
+        elif eye == "closed":
+            d.line([(ex, ey + 2), (ex + 1, ey + 2)], fill=GLOW)
+        elif eye == "happy":
+            d.point([(ex - 1, ey + 1), (ex, ey), (ex + 1, ey), (ex + 2, ey + 1)], fill=GLOW)
+    if eye == "angry":
+        d.line([(11, ey - 2), (13, ey - 1)], fill=(255, 90, 90, 255))
+        d.line([(18, ey - 1), (20, ey - 2)], fill=(255, 90, 90, 255))
+    elif eye == "sad":
+        d.line([(11, ey - 1), (13, ey - 2)], fill=GLOW)
+        d.line([(18, ey - 2), (20, ey - 1)], fill=GLOW)
+        tear(d, 12, ey + 3)
+    if mouth:
+        d.rectangle([14, top + 9, 17, top + 10], fill=GLOW)
+    elif eye != "angry":
+        d.line([(14, top + 9), (17, top + 9)], fill=GLOW)
+    # feet / wheels
+    if not sit:
+        l1, l2 = legs
+        d.rectangle([10, 26 - l1, 13, 29 - l1], fill=BOT_D)
+        d.rectangle([18, 26 - l2, 21, 29 - l2], fill=BOT_D)
+        d.line([(10, 30 - l1), (13, 30 - l1)], fill=DARK)
+        d.line([(18, 30 - l2), (21, 30 - l2)], fill=DARK)
+    return finish(img, d, z, love, 1, 1)
+
+
+def bot_pack():
+    return {
+        "idle": [bot(0), bot(0, blink=1), bot(1), bot(1, eye="closed")],
+        "walk": [bot(0, (1, 0)), bot(1, blink=1), bot(0, (0, 1)), bot(1)],
+        "held": [bot(0, (0, 0), "up", "wide"), bot(0, (1, 1), "up", "wide", blink=1)],
+        "fall": [bot(0, (1, 0), "out", "wide"), bot(0, (0, 1), "up", "wide")],
+        "land": [bot(0, arms="out", eye="closed", sit=True)],
+        "sleep": [bot(0, eye="closed", z=0, sit=True, blink=1), bot(1, eye="closed", z=1, sit=True, blink=1)],
+        "sit": [bot(0, sit=True)],
+        "wave": [bot(0, arms="wave", eye="happy"), bot(0, arms="wave2", eye="happy")],
+        "happy": [bot(0, eye="happy", love=True), bot(-2, (1, 1), "up", "happy", love=True)],
+        "climb": [bot(0, (1, 0), "climb1"), bot(0, (0, 1), "climb2")],
+        "talk": [bot(0, mouth=True), bot(0, blink=1), bot(0, arms="wave", mouth=True), bot(0)],
+        "angry": [bot(0, arms="up", eye="angry"), bot(0, (1, 1), "out", "angry", blink=1)],
+        "sad": [bot(0, eye="sad", sit=True), bot(1, eye="sad", sit=True)],
+    }
+
+
 FPS = {"idle": 3, "walk": 8, "held": 5, "fall": 10, "land": 1, "sleep": 1, "sit": 1, "wave": 5, "happy": 5, "climb": 6, "talk": 6, "angry": 6, "sad": 1}
 
 
@@ -799,6 +980,20 @@ PACKS = {
         "personality": "You are a tiny mischievous daemon, a background process that lives in systemd. You fork yourself for fun, whisper about cron jobs, hide in /var/log, and love running in the background where nobody sees you. Playful, sneaky, a bit chaotic.",
         "lines": ["I'm running in the background. Always.", "Who restarted me? Was it systemd again?", "I forked myself. Twice.", "Check /var/log. Or don't. Heh.", "My cron job runs at 3am. Sleep well.", "Restart=always, baby."],
     }, daemon_pack, fps(walk=9)),
+    "ferris": ({
+        "name": "Ferris",
+        "items": ["ball", "stone"], "builds": ["skyscraper", "wall", "fort"],
+        "scale": 3, "speed": 62, "climb_speed": 52,
+        "personality": "You are Ferris, the Rust programming language's crab mascot. Friendly, upbeat and a little nerdy. You love memory safety, fearless concurrency, cargo and the borrow checker, and gently suggest rewriting things in Rust. You click your claws when excited.",
+        "lines": ["*click click* hello, rustacean!", "cargo build --release!", "fearless concurrency, fearless me.", "the borrow checker is just looking out for you.", "no null pointers on this beach.", "have you tried rewriting it in Rust?", "zero-cost abstractions, infinite cost hugs."],
+    }, ferris_pack, fps(walk=10)),
+    "bot": ({
+        "name": "Bit",
+        "items": ["coffee", "pkg", "sign"], "builds": ["office", "skyscraper", "house"],
+        "scale": 3, "speed": 55, "climb_speed": 45,
+        "personality": "You are Bit, a tiny AI assistant robot that runs locally on the user's GPU. Very eager to help, polite, a bit nerdy, occasionally over-explains, loves tokens, VRAM and tidy code, and blinks your antenna light when thinking.",
+        "lines": ["beep! how can i help?", "running locally. no cloud needed.", "my VRAM is cozy today.", "processing... 100%. done!", "i optimised your desktop. you're welcome.", "*antenna blinks thoughtfully*"],
+    }, bot_pack, fps(walk=7)),
 }
 
 

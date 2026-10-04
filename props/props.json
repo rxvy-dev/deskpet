@@ -63,6 +63,34 @@
       "pkg_0.png"
     ]
   },
+  "steel": {
+    "solid": true,
+    "build": true,
+    "frames": [
+      "steel_0.png"
+    ]
+  },
+  "glass": {
+    "solid": true,
+    "build": true,
+    "frames": [
+      "glass_0.png"
+    ]
+  },
+  "litglass": {
+    "solid": true,
+    "build": true,
+    "frames": [
+      "litglass_0.png"
+    ]
+  },
+  "antenna": {
+    "fps": 1.5,
+    "frames": [
+      "antenna_0.png",
+      "antenna_1.png"
+    ]
+  },
   "flag": {
     "fps": 4,
     "frames": [

@@ -206,6 +206,44 @@ def coffee():
     return [im]
 
 
+def steel():
+    im, d = img(8, 8)
+    d.rectangle([0, 0, 7, 7], fill=(92, 98, 112, 255))
+    box_border(d, 8, 8, (58, 62, 74, 255))
+    d.point([(1, 1), (6, 1), (1, 6), (6, 6)], fill=(170, 176, 190, 255))
+    d.line([(3, 1), (3, 6)], fill=(110, 116, 132, 255))
+    return [im]
+
+
+def glass():
+    im, d = img(8, 8)
+    d.rectangle([0, 0, 7, 7], fill=(70, 76, 90, 255))
+    d.rectangle([1, 1, 6, 6], fill=(110, 180, 240, 255))
+    d.line([(1, 4), (6, 4)], fill=(70, 76, 90, 255))
+    d.point([(2, 2), (3, 2), (2, 3)], fill=(220, 240, 255, 255))
+    return [im]
+
+
+def lit_glass():
+    im = glass()[0]
+    d = ImageDraw.Draw(im)
+    d.rectangle([1, 1, 6, 3], fill=(255, 220, 120, 255))
+    d.rectangle([1, 5, 6, 6], fill=(255, 220, 120, 255))
+    return [im]
+
+
+def antenna():
+    frames = []
+    for on in (True, False):
+        im, d = img(8, 16)
+        d.line([(4, 3), (4, 15)], fill=(150, 156, 170, 255))
+        d.line([(2, 15), (6, 15)], fill=(110, 116, 132, 255))
+        d.line([(2, 8), (6, 8)], fill=(150, 156, 170, 255))
+        d.rectangle([3, 0, 5, 2], fill=(255, 60, 60, 255) if on else (120, 30, 30, 255))
+        frames.append(im)
+    return frames
+
+
 # kind: (painter, info)
 #   solid: pets can stand on it / it stacks; build: can be a building block
 #   bounce: how bouncy it is when loose; toy: pets like to kick it around
@@ -219,6 +257,10 @@ PROPS = {
     "roof_m": (roof_m, {"solid": True, "build": True}),
     "roof_r": (roof_r, {"solid": True, "build": True}),
     "pkg": (pkg, {"solid": True, "build": True, "bounce": 0.2}),
+    "steel": (steel, {"solid": True, "build": True}),
+    "glass": (glass, {"solid": True, "build": True}),
+    "litglass": (lit_glass, {"solid": True, "build": True}),
+    "antenna": (antenna, {"fps": 1.5}),
     "flag": (flag, {"fps": 4}),
     "campfire": (campfire, {"fps": 6, "warm": True}),
     "flower_red": (flower((230, 70, 90, 255)), {}),
